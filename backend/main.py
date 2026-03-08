@@ -1,46 +1,63 @@
+import asyncio
+import json
 import os
-from dotenv import load_dotenv
-from typing import TypedDict, Annotated
-from langgraph.graph import StateGraph, END
-from agents.ui_ux_agent import run_audit
 
-# 1. Load your API keys from the .env file
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
 load_dotenv()
 
-# 2. Define the State (what information gets passed around)
-class ScoutState(TypedDict):
-    target_url: str
-    audit_report: str
-    errors: str
+from agents.ui_agent import run_ui_audit
+from agents.ux_agent import run_ux_audit
+from tools.vision_scraper import capture_website_context
 
-# 3. Define the Nodes (the steps in our workflow)
-def run_ui_ux_audit(state: ScoutState):
-    print(f"🕵️‍♂️ Scout.ai is analyzing: {state['target_url']}...")
-    report = run_audit(state["target_url"])
-    return {"audit_report": report}
+app = FastAPI(title="Scout.ai")
 
-# 4. Build the Graph (wire it all together)
-workflow = StateGraph(ScoutState)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Add our single node for now
-workflow.add_node("ui_ux_auditor", run_ui_ux_audit)
 
-# Define the flow
-workflow.set_entry_point("ui_ux_auditor")
-workflow.add_edge("ui_ux_auditor", END)
+class AuditRequest(BaseModel):
+    url: str
 
-# Compile the graph into an executable app
-scout_app = workflow.compile()
 
-# 5. The Test Runner
-if __name__ == "__main__":
-    print("🚀 Scout.ai Initialized!")
-    test_url = input("Enter a URL to audit (e.g., https://example.com): ")
-    
-    # Run the graph
-    result = scout_app.invoke({"target_url": test_url})
-    
-    print("\n" + "="*50)
-    print("📋 FINAL AUDIT REPORT:")
-    print("="*50)
-    print(result["audit_report"])
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
+async def _stream_audit(url: str):
+    loop = asyncio.get_event_loop()
+    try:
+        yield _sse({"type": "status", "step": "fetch", "message": "🌐 Fetching page context..."})
+        context = await loop.run_in_executor(None, capture_website_context, url)
+
+        if context.get("error"):
+            yield _sse({"type": "error", "message": context["error"]})
+            return
+
+        yield _sse({"type": "status", "step": "ui", "message": "🎨 Running UI audit (Gemini 2.5 Flash + vision)..."})
+        ui_report = await loop.run_in_executor(None, run_ui_audit, url, context)
+
+        yield _sse({"type": "status", "step": "ux", "message": "🧭 Running UX audit (Llama 3.3 70B via Gradient)..."})
+        ux_report = await loop.run_in_executor(None, run_ux_audit, url, context)
+
+        yield _sse({"type": "result", "ui_report": ui_report, "ux_report": ux_report})
+
+    except Exception as exc:
+        yield _sse({"type": "error", "message": str(exc)})
+
+
+@app.post("/audit")
+async def audit(req: AuditRequest):
+    return StreamingResponse(
+        _stream_audit(req.url),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

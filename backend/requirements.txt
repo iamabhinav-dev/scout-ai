@@ -2,3 +2,8 @@ gradient-adk
 langgraph
 langchain-core
 gradient
+playwright
+httpx
+google-genai
+fastapi
+uvicorn

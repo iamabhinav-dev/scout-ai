@@ -1,9 +1,12 @@
-import requests
+import base64
 from html.parser import HTMLParser
+
+import httpx
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 
 class _AccessibilityChecker(HTMLParser):
-    """Lightweight HTML parser to extract accessibility signals."""
+    """Lightweight HTML parser to extract accessibility signals from rendered DOM."""
 
     def __init__(self):
         super().__init__()
@@ -49,28 +52,63 @@ class _AccessibilityChecker(HTMLParser):
             self.aria_roles.append(role)
 
 
-def capture_website_context(url: str) -> dict:
-    """Fetch a website and return its DOM content and accessibility summary.
+def capture_website_context(url: str, viewport_width: int = 1280, viewport_height: int = 800) -> dict:
+    """Use a headless Chromium browser to render a page and return its context.
 
     Returns a dict with keys:
-        url, dom, accessibility_summary, status_code, final_url
-    On network error the dict will have an 'error' key instead.
+        url, dom, screenshot_base64, accessibility_summary, final_url
+    On error the dict will have an 'error' key instead.
     """
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
+    html = ""
+    screenshot_base64 = None
+    final_url = url
 
     try:
-        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        return {"url": url, "error": str(exc), "dom": "", "accessibility_summary": {}}
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                viewport={"width": viewport_width, "height": viewport_height},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            )
 
-    html = response.text
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except PlaywrightTimeoutError:
+                # Page timed out waiting for domcontentloaded, but content may
+                # already be present — proceed and grab whatever loaded.
+                pass
+
+            final_url = page.url
+            html = page.content()
+            screenshot_bytes = page.screenshot(full_page=True)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            browser.close()
+
+    except Exception as exc:
+        # Playwright failed entirely — fall back to a plain HTTP fetch
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            }
+            resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=30)
+            html = resp.text
+            final_url = str(resp.url)
+        except Exception as http_exc:
+            return {
+                "url": url,
+                "error": f"Playwright: {exc} | HTTP fallback: {http_exc}",
+                "dom": "",
+                "screenshot_base64": None,
+                "accessibility_summary": {},
+            }
 
     checker = _AccessibilityChecker()
     checker.feed(html)
@@ -88,7 +126,7 @@ def capture_website_context(url: str) -> dict:
     return {
         "url": url,
         "dom": html,
+        "screenshot_base64": screenshot_base64,
         "accessibility_summary": accessibility_summary,
-        "status_code": response.status_code,
-        "final_url": str(response.url),
+        "final_url": final_url,
     }
