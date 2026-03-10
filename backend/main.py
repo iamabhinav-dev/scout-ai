@@ -134,26 +134,21 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
-_NODE_MESSAGES = {
-    "scrape":     {"step": "fetch", "message": "🌐 Scraping page (DOM + screenshot)..."},
-    "ui_auditor": {"step": "ui",    "message": "🎨 Running UI audit (Gemini 2.5 Flash + vision)..."},
-    "ux_auditor": {"step": "ux",    "message": "🧭 Running UX audit (Llama 3.3 70B via Gradient)..."},
-}
-
-_NODE_DONE = {
-    "scrape":     {"step": "fetch", "message": "✅ Page scraped — launching parallel audits..."},
-    "ui_auditor": {"step": "ui",    "message": "✅ UI audit complete"},
-    "ux_auditor": {"step": "ux",    "message": "✅ UX audit complete"},
-}
-
-
-def _run_graph(url: str):
-    """Run the LangGraph synchronously and yield (node_name, updates) tuples."""
-    for event in scout_graph.stream(
-        {"target_url": url},
-        stream_mode="updates",
-    ):
-        yield event
+def _run_graph(url: str) -> dict:
+    """Run the LangGraph synchronously and return {ui_report, ux_report} or {error}."""
+    ui_report = None
+    ux_report = None
+    for event in scout_graph.stream({"target_url": url}, stream_mode="updates"):
+        for node_name, update in event.items():
+            if node_name == "scrape":
+                ctx = update.get("page_context", {})
+                if ctx.get("error"):
+                    return {"error": ctx["error"]}
+            elif node_name == "ui_auditor":
+                ui_report = update.get("ui_report")
+            elif node_name == "ux_auditor":
+                ux_report = update.get("ux_report")
+    return {"ui_report": ui_report, "ux_report": ux_report}
 
 
 async def _stream_audit(url: str):
@@ -161,44 +156,18 @@ async def _stream_audit(url: str):
     log.info("[request] AUDIT START  url=%s", url)
     t_total = time.perf_counter()
     try:
-        # Emit "starting" status for the scrape step
-        yield _sse({"type": "status", **_NODE_MESSAGES["scrape"]})
+        result = await loop.run_in_executor(_executor, lambda: _run_graph(url))
 
-        ui_report = None
-        ux_report = None
+        if "error" in result:
+            yield _sse({"type": "error", "message": result["error"]})
+            return
 
-        # Stream graph updates from a thread
-        for event in await loop.run_in_executor(_executor, lambda: list(_run_graph(url))):
-            # event is {node_name: state_update_dict}
-            for node_name, update in event.items():
-                if node_name == "scrape":
-                    # Check for scrape errors
-                    ctx = update.get("page_context", {})
-                    if ctx.get("error"):
-                        yield _sse({"type": "error", "message": ctx["error"]})
-                        return
-                    yield _sse({"type": "status", **_NODE_DONE["scrape"]})
-                    # Emit "starting" for both auditors
-                    yield _sse({"type": "status", **_NODE_MESSAGES["ui_auditor"]})
-                    yield _sse({"type": "status", **_NODE_MESSAGES["ux_auditor"]})
-
-                elif node_name == "ui_auditor":
-                    ui_report = update.get("ui_report")
-                    yield _sse({"type": "status", **_NODE_DONE["ui_auditor"]})
-                    yield _sse({"type": "ui_result", "ui_report": ui_report})
-
-                elif node_name == "ux_auditor":
-                    ux_report = update.get("ux_report")
-                    yield _sse({"type": "status", **_NODE_DONE["ux_auditor"]})
-                    yield _sse({"type": "ux_result", "ux_report": ux_report})
-
-                elif node_name == "merge":
-                    log.info("[request] AUDIT DONE   total=%.1fs", time.perf_counter() - t_total)
-                    yield _sse({
-                        "type": "result",
-                        "ui_report": ui_report,
-                        "ux_report": ux_report,
-                    })
+        log.info("[request] AUDIT DONE   total=%.1fs", time.perf_counter() - t_total)
+        yield _sse({
+            "type": "result",
+            "ui_report": result["ui_report"],
+            "ux_report": result["ux_report"],
+        })
 
     except Exception as exc:
         log.exception("[request] UNHANDLED ERROR  %s", exc)

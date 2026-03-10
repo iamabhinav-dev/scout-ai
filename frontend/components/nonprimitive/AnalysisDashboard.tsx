@@ -2,6 +2,7 @@
 
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState, useRef } from "react";
+import { useAuditStream, type UiReport, type UxReport } from "@/hooks/useAuditStream";
 
 /* ─── Types ─── */
 type AgentStatus = "processing" | "complete";
@@ -56,13 +57,13 @@ const AGENTS: { id: string; name: string; color: string; glow: string }[] = [
   { id: "vibe",     name: "Vibe Agent",     color: "#ec4899", glow: "rgba(236,72,153,0.25)" },
 ];
 
-const COMPLETE_TIMES: Record<string, number> = { ui: 4000, security: 5500, ux: 7000, vibe: 8500 };
+const MOCK_COMPLETE_TIMES: Record<string, number> = { security: 5500, vibe: 8500 };
 
-/* ─── Mock results data ─── */
-const SCORES: Record<TabId, number> = { overall: 74, security: 68, ui: 82, ux: 71, branding: 85, vibe: 79 };
+/* ─── Mock results data (fallbacks for unimplemented agents) ─── */
+const MOCK_SCORES: Record<TabId, number> = { overall: 74, security: 68, ui: 82, ux: 71, branding: 85, vibe: 79 };
 
 type Check = { label: string; pass: boolean; note?: string };
-const CHECKS: Record<string, Check[]> = {
+const MOCK_CHECKS: Record<string, Check[]> = {
   security: [
     { label: "SSL/TLS Certificate valid", pass: true },
     { label: "HTTPS enforced on all routes", pass: true },
@@ -115,13 +116,13 @@ const CHECKS: Record<string, Check[]> = {
   ],
 };
 
-const ACTIONS = [
+const MOCK_ACTIONS = [
   { priority: "Critical", text: "Add a Content Security Policy (CSP) header to mitigate XSS attack vectors." },
   { priority: "High",     text: "Build comprehensive error state UI — form failures, empty states, and network errors." },
   { priority: "Medium",   text: "Develop a unique, memorable brand personality to stand out from competitors." },
 ];
 
-const SUMMARIES: Record<TabId, string> = {
+const MOCK_SUMMARIES: Record<TabId, string> = {
   overall: "Your site has solid foundational structure with strong branding and visual design, but has notable gaps in security configuration and UX edge-case handling. Addressing the critical CSP vulnerability and error state coverage would push your score into the 85+ range.",
   security: "Seven of eight security checks passed. The main risk is a missing Content Security Policy header, which leaves the site open to cross-site scripting injection. HSTS and SSL are properly configured.",
   ui: "The UI is well-crafted with clear hierarchy and strong contrast. The two failing areas—component inconsistency and missing loading states—are polish issues rather than critical flaws.",
@@ -209,6 +210,8 @@ export default function AnalysisDashboard() {
   const params = useSearchParams();
   const targetUrl = params.get("url") || "your-website.com";
 
+  const { uiReport, uxReport, isDone, error } = useAuditStream(targetUrl);
+
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>(() =>
     Object.fromEntries(
       AGENTS.map((a) => [a.id, { progress: 0, status: "processing" as AgentStatus, line: AGENT_MESSAGES[a.id][0] }])
@@ -217,65 +220,132 @@ export default function AnalysisDashboard() {
   const [showResults, setShowResults] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("overall");
 
-  const intervalsRef = useRef<ReturnType<typeof setInterval>[]>([]);
-  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const intervalsRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  const timeoutsRef  = useRef<ReturnType<typeof setTimeout>[]>([]);
 
+  // Start progress animations for ALL agents on mount.
+  // security/vibe auto-complete after a fixed mock time.
+  // ui/ux drift toward 90% indefinitely — snapped to 100% when the real SSE result arrives.
   useEffect(() => {
-    // Run progress bars & terminal messages per agent
-    AGENTS.forEach((agent, agentIdx) => {
-      const completeAt = COMPLETE_TIMES[agent.id];
-      const messages = AGENT_MESSAGES[agent.id];
+    AGENTS.forEach((agent) => {
+      const agentId = agent.id;
+      const messages = AGENT_MESSAGES[agentId];
       let msgIdx = 0;
 
-      // Cycle messages every ~1.4s
       const msgInterval = setInterval(() => {
         msgIdx = (msgIdx + 1) % messages.length;
-        setAgentStates((prev) => ({
-          ...prev,
-          [agent.id]: { ...prev[agent.id], line: messages[msgIdx] },
-        }));
+        setAgentStates((prev) => ({ ...prev, [agentId]: { ...prev[agentId], line: messages[msgIdx] } }));
       }, 1400);
-      intervalsRef.current.push(msgInterval);
+      intervalsRef.current[`${agentId}_msg`] = msgInterval;
 
-      // Progress bar animation
+      // security/vibe: auto-complete at fixed times. ui/ux: drift toward 90% over 60 s
+      const driftDuration = MOCK_COMPLETE_TIMES[agentId] ?? 60000;
       const start = Date.now();
       const progressInterval = setInterval(() => {
         const elapsed = Date.now() - start;
-        const raw = Math.min((elapsed / completeAt) * 100, 100);
+        const raw = Math.min((elapsed / driftDuration) * 100, 100);
         const eased = raw < 90 ? raw : 90 + (raw - 90) * 0.3;
-        setAgentStates((prev) => ({ ...prev, [agent.id]: { ...prev[agent.id], progress: Math.round(eased) } }));
+        setAgentStates((prev) => ({ ...prev, [agentId]: { ...prev[agentId], progress: Math.round(eased) } }));
       }, 80);
-      intervalsRef.current.push(progressInterval);
+      intervalsRef.current[`${agentId}_progress`] = progressInterval;
 
-      // Complete agent
-      const completeTimeout = setTimeout(() => {
-        clearInterval(msgInterval);
-        clearInterval(progressInterval);
-        setAgentStates((prev) => ({
-          ...prev,
-          [agent.id]: { progress: 100, status: "complete", line: "Analysis complete." },
-        }));
-      }, completeAt);
-      timeoutsRef.current.push(completeTimeout);
+      if (agentId === "security" || agentId === "vibe") {
+        const completeTimeout = setTimeout(() => {
+          clearInterval(msgInterval);
+          clearInterval(progressInterval);
+          setAgentStates((prev) => ({ ...prev, [agentId]: { progress: 100, status: "complete", line: "Analysis complete." } }));
+        }, driftDuration);
+        timeoutsRef.current.push(completeTimeout);
+      }
     });
 
-    // Show results after last agent
-    const showResultsTimeout = setTimeout(() => setShowResults(true), 9200);
-    timeoutsRef.current.push(showResultsTimeout);
-
     return () => {
-      intervalsRef.current.forEach(clearInterval);
+      Object.values(intervalsRef.current).forEach(clearInterval);
       timeoutsRef.current.forEach(clearTimeout);
     };
   }, []);
 
+  // When the backend result arrives, snap ui/ux cards to 100% and show results panel
+  useEffect(() => {
+    if (!isDone) return;
+    (["ui", "ux"] as const).forEach((agentId) => {
+      clearInterval(intervalsRef.current[`${agentId}_msg`]);
+      clearInterval(intervalsRef.current[`${agentId}_progress`]);
+      delete intervalsRef.current[`${agentId}_msg`];
+      delete intervalsRef.current[`${agentId}_progress`];
+    });
+    setAgentStates((prev) => ({
+      ...prev,
+      ui: { progress: 100, status: "complete", line: "Analysis complete." },
+      ux: { progress: 100, status: "complete", line: "Analysis complete." },
+    }));
+    setShowResults(true);
+  }, [isDone]);
+
+  // ── Derived data from real reports (fall back to mock when report not yet received) ──
+
+  const uiScore = uiReport ? uiReport.overall_score * 10 : MOCK_SCORES.ui;
+  const uxScore = uxReport ? uxReport.overall_score * 10 : MOCK_SCORES.ux;
+  const scores: Record<TabId, number> = {
+    security: MOCK_SCORES.security,
+    branding: MOCK_SCORES.branding,
+    vibe:     MOCK_SCORES.vibe,
+    ui:       uiScore,
+    ux:       uxScore,
+    overall:  Math.round((uiScore + uxScore + MOCK_SCORES.security + MOCK_SCORES.branding + MOCK_SCORES.vibe) / 5),
+  };
+
+  const uiChecks: Check[] = uiReport
+    ? [
+        { label: "Layout & spacing",  pass: uiReport.layout_spacing.score  >= 6, note: uiReport.layout_spacing.score  < 6 ? uiReport.layout_spacing.findings  : undefined },
+        { label: "Responsive design", pass: uiReport.responsiveness.score  >= 6, note: uiReport.responsiveness.score  < 6 ? uiReport.responsiveness.findings  : undefined },
+        { label: "Typography scale",  pass: uiReport.typography.score      >= 6, note: uiReport.typography.score      < 6 ? uiReport.typography.findings      : undefined },
+        { label: "Color coherence",   pass: uiReport.color_coherence.score >= 6, note: uiReport.color_coherence.score < 6 ? uiReport.color_coherence.findings : undefined },
+      ]
+    : MOCK_CHECKS.ui;
+
+  const uxChecks: Check[] = uxReport
+    ? [
+        { label: "Accessibility",   pass: uxReport.accessibility.score >= 6, note: uxReport.accessibility.score < 6 ? uxReport.accessibility.findings : undefined },
+        { label: "UX friction",     pass: uxReport.ux_friction.score   >= 6, note: uxReport.ux_friction.score   < 6 ? uxReport.ux_friction.findings   : undefined },
+        { label: "Navigation & IA", pass: uxReport.navigation_ia.score >= 6, note: uxReport.navigation_ia.score < 6 ? uxReport.navigation_ia.findings : undefined },
+        { label: "Inclusivity",     pass: uxReport.inclusivity.score   >= 6, note: uxReport.inclusivity.score   < 6 ? uxReport.inclusivity.findings   : undefined },
+      ]
+    : MOCK_CHECKS.ux;
+
+  const checks: Record<string, Check[]> = { ...MOCK_CHECKS, ui: uiChecks, ux: uxChecks };
+
+  const uiSummary = uiReport
+    ? `Layout: ${uiReport.layout_spacing.findings} Responsiveness: ${uiReport.responsiveness.findings} Typography: ${uiReport.typography.findings} Colors: ${uiReport.color_coherence.findings}`
+    : MOCK_SUMMARIES.ui;
+
+  const uxSummary = uxReport
+    ? `Accessibility: ${uxReport.accessibility.findings} Friction: ${uxReport.ux_friction.findings} Navigation: ${uxReport.navigation_ia.findings} Inclusivity: ${uxReport.inclusivity.findings}`
+    : MOCK_SUMMARIES.ux;
+
+  const summaries: Record<TabId, string> = {
+    ...MOCK_SUMMARIES,
+    ui: uiSummary,
+    ux: uxSummary,
+    overall: isDone
+      ? `UI scored ${uiScore}/100 and UX scored ${uxScore}/100. ${uiReport?.recommendations[0] ?? ""} ${uxReport?.recommendations[0] ?? ""}`
+      : MOCK_SUMMARIES.overall,
+  };
+
+  const actions = isDone
+    ? [
+        ...(uiReport?.recommendations ?? []).map((text) => ({ priority: "High", text })),
+        ...(uxReport?.recommendations ?? []).map((text) => ({ priority: "High", text })),
+      ].slice(0, 3)
+    : MOCK_ACTIONS;
+
   const TABS: { id: TabId; label: string }[] = [
-    { id: "overall",   label: "Overall" },
-    { id: "security",  label: "Security" },
-    { id: "ui",        label: "UI" },
-    { id: "ux",        label: "UX" },
-    { id: "branding",  label: "Branding" },
-    { id: "vibe",      label: "Vibe" },
+    { id: "overall",  label: "Overall" },
+    { id: "security", label: "Security" },
+    { id: "ui",       label: "UI" },
+    { id: "ux",       label: "UX" },
+    { id: "branding", label: "Branding" },
+    { id: "vibe",     label: "Vibe" },
   ];
 
   return (
@@ -313,6 +383,22 @@ export default function AnalysisDashboard() {
           </a>
         </div>
 
+        {/* ── Error banner ── */}
+        {error && (
+          <div
+            className="mb-8 p-4 rounded-xl flex items-start gap-3 animate-fade-in"
+            style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}
+          >
+            <svg className="shrink-0 mt-0.5" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div>
+              <p className="text-sm font-semibold" style={{ color: "#ef4444" }}>Audit failed</p>
+              <p className="text-xs mt-0.5" style={{ color: "#ef444499" }}>{error}</p>
+            </div>
+          </div>
+        )}
+
         {/* ── Agent Cards ── */}
         <section className="mb-10">
           <p className="text-text-sub text-xs font-medium tracking-widest uppercase mb-4 animate-fade-in">
@@ -321,12 +407,12 @@ export default function AnalysisDashboard() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {AGENTS.map((agent, i) => {
               const state = agentStates[agent.id];
-              const isDone = state.status === "complete";
+              const agentDone = state.status === "complete";
               return (
                 <div
                   key={agent.id}
-                  className={`glass-card rounded-xl p-4 animate-fade-in-up delay-${(i + 1) * 100} transition-all duration-500 ${isDone ? "opacity-80" : ""}`}
-                  style={isDone ? {} : { borderColor: `${agent.color}22` }}
+                  className={`glass-card rounded-xl p-4 animate-fade-in-up delay-${(i + 1) * 100} transition-all duration-500 ${agentDone ? "opacity-80" : ""}`}
+                  style={agentDone ? {} : { borderColor: `${agent.color}22` }}
                 >
                   {/* Card header */}
                   <div className="flex items-center justify-between mb-3">
@@ -337,7 +423,7 @@ export default function AnalysisDashboard() {
                       <span className="text-text text-sm font-semibold">{agent.name}</span>
                     </div>
                     {/* Status dot */}
-                    {isDone ? (
+                    {agentDone ? (
                       <div className="w-5 h-5 rounded-full flex items-center justify-center" style={{ background: "rgba(34,197,94,0.15)" }}>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="20 6 9 17 4 12"/>
@@ -363,13 +449,13 @@ export default function AnalysisDashboard() {
                       className="h-full rounded-full relative overflow-hidden transition-all duration-150"
                       style={{
                         width: `${state.progress}%`,
-                        background: isDone
+                        background: agentDone
                           ? `linear-gradient(90deg, ${agent.color}aa, ${agent.color})`
                           : `linear-gradient(90deg, ${agent.color}66, ${agent.color})`,
                         boxShadow: `0 0 8px ${agent.glow}`,
                       }}
                     >
-                      {!isDone && (
+                      {!agentDone && (
                         <span
                           className="absolute inset-0 opacity-50"
                           style={{
@@ -386,10 +472,10 @@ export default function AnalysisDashboard() {
                     className="rounded-md px-2.5 py-1.5"
                     style={{ background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.05)" }}
                   >
-                    <p className="font-mono text-[10px] leading-relaxed truncate" style={{ color: isDone ? "#22c55e" : agent.color }}>
+                    <p className="font-mono text-[10px] leading-relaxed truncate" style={{ color: agentDone ? "#22c55e" : agent.color }}>
                       <span style={{ opacity: 0.5 }}>$ </span>
                       {state.line}
-                      {!isDone && <span className="animate-terminal-cur">▋</span>}
+                      {!agentDone && <span className="animate-terminal-cur">▋</span>}
                     </p>
                   </div>
 
@@ -426,7 +512,7 @@ export default function AnalysisDashboard() {
             >
               {TABS.map((tab) => {
                 const isActive = activeTab === tab.id;
-                const score = SCORES[tab.id];
+                const score = scores[tab.id];
                 const col = tab.id === "overall" ? "#8b5cf6" : SCORE_COLORS[tab.id];
                 return (
                   <button
@@ -458,12 +544,12 @@ export default function AnalysisDashboard() {
                 <div className="grid lg:grid-cols-3 gap-5">
                   {/* Score gauge */}
                   <div className="glass-card rounded-xl p-6 flex flex-col items-center justify-center">
-                    <CircularGauge score={SCORES.overall} />
+                    <CircularGauge score={scores.overall} />
                     <div className="mt-4 w-full space-y-2.5">
                       {(["security","ui","ux","branding","vibe"] as TabId[]).map((k) => (
                         <div key={k} className="flex items-center gap-2">
                           <span className="text-text-sub text-xs w-16 capitalize">{k}</span>
-                          <ScoreBar score={SCORES[k]} color={SCORE_COLORS[k]} />
+                          <ScoreBar score={scores[k]} color={SCORE_COLORS[k]} />
                         </div>
                       ))}
                     </div>
@@ -478,13 +564,13 @@ export default function AnalysisDashboard() {
                         </svg>
                         Executive Summary
                       </h3>
-                      <p className="text-text-sub text-sm leading-relaxed">{SUMMARIES.overall}</p>
+                      <p className="text-text-sub text-sm leading-relaxed">{summaries.overall}</p>
                     </div>
 
                     <div className="glass-card rounded-xl p-6">
                       <h3 className="text-text font-semibold mb-4">Top 3 Action Items</h3>
                       <div className="space-y-3">
-                        {ACTIONS.map((action, i) => {
+                        {actions.map((action, i) => {
                           const priorityColor = action.priority === "Critical" ? "#ef4444" : action.priority === "High" ? "#f59e0b" : "#8b5cf6";
                           return (
                             <div key={i} className="flex gap-3 items-start p-3 rounded-lg" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
@@ -517,17 +603,17 @@ export default function AnalysisDashboard() {
                             stroke={SCORE_COLORS[activeTab] || "#8b5cf6"}
                             strokeWidth="6" strokeLinecap="round"
                             strokeDasharray="314.16"
-                            strokeDashoffset={314.16 * (1 - SCORES[activeTab] / 100)}
+                            strokeDashoffset={314.16 * (1 - scores[activeTab] / 100)}
                             transform="rotate(-90 60 60)"
                             style={{ filter: `drop-shadow(0 0 6px ${SCORE_COLORS[activeTab] || "#8b5cf6"})`, transition: "stroke-dashoffset 1.2s ease-out" }}
                           />
-                          <text x="60" y="55" textAnchor="middle" fill="#f0f2f5" fontSize="22" fontWeight="700" fontFamily="var(--font-display)">{SCORES[activeTab]}</text>
+                          <text x="60" y="55" textAnchor="middle" fill="#f0f2f5" fontSize="22" fontWeight="700" fontFamily="var(--font-display)">{scores[activeTab]}</text>
                           <text x="60" y="70" textAnchor="middle" fill="#7a8394" fontSize="9" fontFamily="var(--font-display)">/100</text>
                         </svg>
                       </div>
                     </div>
                     <div className="w-full space-y-1.5">
-                      {(CHECKS[activeTab] || []).map((c) => (
+                      {(checks[activeTab] || []).map((c) => (
                         <div key={c.label} className="flex items-center gap-2">
                           <span className={`w-3.5 h-3.5 rounded-full shrink-0 flex items-center justify-center`} style={{ background: c.pass ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)" }}>
                             {c.pass
@@ -550,13 +636,13 @@ export default function AnalysisDashboard() {
                         </svg>
                         {activeTab} Insights
                       </h3>
-                      <p className="text-text-sub text-sm leading-relaxed">{SUMMARIES[activeTab]}</p>
+                      <p className="text-text-sub text-sm leading-relaxed">{summaries[activeTab]}</p>
                     </div>
 
                     <div className="glass-card rounded-xl p-6">
                       <h3 className="text-text font-semibold mb-4">Detailed Checks</h3>
                       <div className="space-y-2">
-                        {(CHECKS[activeTab] || []).map((check, i) => (
+                        {(checks[activeTab] || []).map((check, i) => (
                           <div
                             key={i}
                             className="flex items-start gap-3 p-3 rounded-lg transition-colors"
