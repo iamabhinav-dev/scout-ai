@@ -24,6 +24,7 @@ log = logging.getLogger("scout")
 
 from agents.ui_agent import run_ui_audit
 from agents.ux_agent import run_ux_audit
+from agents.compliance_agent import run_compliance_audit
 from tools.vision_scraper import capture_website_context
 
 # ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ class ScoutState(TypedDict):
     page_context: dict
     ui_report: dict
     ux_report: dict
+    compliance_report: dict
 
 # ---------------------------------------------------------------------------
 # 2. Graph nodes
@@ -82,8 +84,21 @@ def ux_audit_node(state: ScoutState) -> dict:
     return {"ux_report": report}
 
 
+def compliance_audit_node(state: ScoutState) -> dict:
+    """Run the compliance audit (Llama 3.3 70B via Gradient)."""
+    log.info("[compliance_auditor] START  model=llama3.3-70b-instruct")
+    t0 = time.perf_counter()
+    report = run_compliance_audit(state["target_url"], state["page_context"])
+    elapsed = time.perf_counter() - t0
+    if "error" in report:
+        log.error("[compliance_auditor] ERROR  %.1fs  %s", elapsed, report["error"])
+    else:
+        log.info("[compliance_auditor] DONE   %.1fs  overall_risk_score=%s", elapsed, report.get("overall_risk_score"))
+    return {"compliance_report": report}
+
+
 def merge_node(state: ScoutState) -> dict:
-    """No-op merge point — both audit branches converge here."""
+    """No-op merge point — all audit branches converge here."""
     return {}
 
 # ---------------------------------------------------------------------------
@@ -95,17 +110,20 @@ workflow = StateGraph(ScoutState)
 workflow.add_node("scrape", scrape_node)
 workflow.add_node("ui_auditor", ui_audit_node)
 workflow.add_node("ux_auditor", ux_audit_node)
+workflow.add_node("compliance_auditor", compliance_audit_node)
 workflow.add_node("merge", merge_node)
 
 workflow.set_entry_point("scrape")
 
-# Fan-out: scrape → ui_auditor + ux_auditor (parallel)
+# Fan-out: scrape → ui_auditor + ux_auditor + compliance_auditor (parallel)
 workflow.add_edge("scrape", "ui_auditor")
 workflow.add_edge("scrape", "ux_auditor")
+workflow.add_edge("scrape", "compliance_auditor")
 
-# Fan-in: both auditors → merge → END
+# Fan-in: all auditors → merge → END
 workflow.add_edge("ui_auditor", "merge")
 workflow.add_edge("ux_auditor", "merge")
+workflow.add_edge("compliance_auditor", "merge")
 workflow.add_edge("merge", END)
 
 scout_graph = workflow.compile()
@@ -135,9 +153,10 @@ def _sse(data: dict) -> str:
 
 
 def _run_graph(url: str) -> dict:
-    """Run the LangGraph synchronously and return {ui_report, ux_report} or {error}."""
+    """Run the LangGraph synchronously and return {ui_report, ux_report, compliance_report} or {error}."""
     ui_report = None
     ux_report = None
+    compliance_report = None
     for event in scout_graph.stream({"target_url": url}, stream_mode="updates"):
         for node_name, update in event.items():
             if node_name == "scrape":
@@ -148,7 +167,9 @@ def _run_graph(url: str) -> dict:
                 ui_report = update.get("ui_report")
             elif node_name == "ux_auditor":
                 ux_report = update.get("ux_report")
-    return {"ui_report": ui_report, "ux_report": ux_report}
+            elif node_name == "compliance_auditor":
+                compliance_report = update.get("compliance_report")
+    return {"ui_report": ui_report, "ux_report": ux_report, "compliance_report": compliance_report}
 
 
 async def _stream_audit(url: str):
@@ -167,6 +188,7 @@ async def _stream_audit(url: str):
             "type": "result",
             "ui_report": result["ui_report"],
             "ux_report": result["ux_report"],
+            "compliance_report": result["compliance_report"],
         })
 
     except Exception as exc:
@@ -178,6 +200,33 @@ async def _stream_audit(url: str):
 async def audit(req: AuditRequest):
     return StreamingResponse(
         _stream_audit(req.url),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/audit/compliance")
+async def audit_compliance(req: AuditRequest):
+    """Scrape the URL and run only the compliance audit."""
+    async def _stream():
+        loop = asyncio.get_event_loop()
+        log.info("[request] COMPLIANCE START  url=%s", req.url)
+        t0 = time.perf_counter()
+        try:
+            context = await loop.run_in_executor(_executor, lambda: capture_website_context(req.url))
+            if context.get("error"):
+                yield _sse({"type": "error", "message": context["error"]})
+                return
+
+            report = await loop.run_in_executor(_executor, lambda: run_compliance_audit(req.url, context))
+            log.info("[request] COMPLIANCE DONE   %.1fs", time.perf_counter() - t0)
+            yield _sse({"type": "result", "compliance_report": report})
+        except Exception as exc:
+            log.exception("[request] COMPLIANCE ERROR  %s", exc)
+            yield _sse({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(
+        _stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
