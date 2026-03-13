@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TechNova - Next Generation Solutions</title>
+  <!-- Intentionally missing: meta description, og tags, viewport meta -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ISSUE: No skip-to-content link for accessibility -->
+
+  <header>
+    <nav>
+      <div class="logo">TechNova</div>
+      <ul class="nav-links">
+        <li><a href="#">Home</a></li>
+        <li><a href="#">Products</a></li>
+        <li><a href="#">About</a></li>
+        <!-- ISSUE: Contact link goes nowhere -->
+        <li><a href="javascript:void(0)">Contact</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <!-- ISSUE: H3 used before any H1 (broken heading hierarchy) -->
+  <h3 class="preheading">Welcome to the future</h3>
+
+  <section class="hero">
+    <!-- ISSUE: H1 appears after H3 -->
+    <h1>We Build Amazing Software</h1>
+    <p class="hero-sub">Empowering businesses with cutting-edge technology solutions since 2019.</p>
+    <div class="hero-buttons">
+      <!-- ISSUE: Button has no accessible name, just an icon -->
+      <button class="btn-primary">Get Started</button>
+      <button class="btn-ghost">&#9654;</button>
+    </div>
+  </section>
+
+  <section class="features">
+    <!-- ISSUE: Jumps from H1 to H4 (skipping H2, H3) -->
+    <h4>Our Services</h4>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <!-- ISSUE: Image missing alt text -->
+        <img src="https://placehold.co/300x200/1a1a2e/e94560?text=AI+Solutions">
+        <h5>AI Solutions</h5>
+        <p>Leverage artificial intelligence to transform your business operations and drive growth.</p>
+      </div>
+      <div class="feature-card">
+        <!-- ISSUE: Image has empty alt text -->
+        <img src="https://placehold.co/300x200/1a1a2e/00d2ff?text=Cloud+Services" alt="">
+        <h5>Cloud Services</h5>
+        <p>Scale your infrastructure seamlessly with our enterprise-grade cloud platform.</p>
+      </div>
+      <div class="feature-card">
+        <!-- ISSUE: Image missing alt text entirely -->
+        <img src="https://placehold.co/300x200/1a1a2e/4ecca3?text=Cybersecurity">
+        <h5>Cybersecurity</h5>
+        <p>Protect your digital assets with military-grade security solutions.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="stats">
+    <!-- ISSUE: Low contrast text (light grey on slightly darker grey) -->
+    <div class="stat">
+      <span class="stat-number">500+</span>
+      <span class="stat-label">Happy Clients</span>
+    </div>
+    <div class="stat">
+      <span class="stat-number">99.9%</span>
+      <span class="stat-label">Uptime</span>
+    </div>
+    <div class="stat">
+      <span class="stat-number">24/7</span>
+      <span class="stat-label">Support</span>
+    </div>
+  </section>
+
+  <section class="testimonial">
+    <h2>What Our Clients Say</h2>
+    <!-- ISSUE: Entire testimonial block is just italic text with no semantic markup -->
+    <div class="testimonial-card">
+      <i>"TechNova transformed our entire workflow. Incredible team!"</i>
+      <p style="color: #444; font-size: 11px;">— Sarah K., CTO at FintechCo</p>
+    </div>
+  </section>
+
+  <section class="contact-form">
+    <h2>Get in Touch</h2>
+    <form>
+      <!-- ISSUE: Input has no label, no aria-label, no associated label element -->
+      <input type="text" placeholder="Your Name">
+      <!-- ISSUE: Same - no label -->
+      <input type="email" placeholder="Your Email">
+      <!-- ISSUE: Textarea with no label -->
+      <textarea placeholder="Your Message" rows="4"></textarea>
+
+      <!-- ISSUE: Pre-ticked marketing consent (dark pattern) -->
+      <label class="checkbox-label">
+        <input type="checkbox" checked>
+        I agree to receive marketing emails and promotional offers
+      </label>
+
+      <!-- ISSUE: No mention of privacy policy in the form -->
+      <button type="submit" class="btn-primary">Send Message</button>
+    </form>
+  </section>
+
+  <footer>
+    <div class="footer-content">
+      <div class="footer-col">
+        <h5>TechNova</h5>
+        <p>Building the future, one line of code at a time.</p>
+      </div>
+      <div class="footer-col">
+        <h5>Quick Links</h5>
+        <ul>
+          <li><a href="#">Home</a></li>
+          <li><a href="#">Products</a></li>
+          <li><a href="#">Careers</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h5>Legal</h5>
+        <ul>
+          <!-- ISSUE: Privacy Policy and Terms both link to "#" (placeholder) -->
+          <li><a href="#">Privacy Policy</a></li>
+          <li><a href="#">Terms of Service</a></li>
+          <!-- ISSUE: Cookie Policy also placeholder -->
+          <li><a href="#">Cookie Policy</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2024 TechNova Inc. All rights reserved.</p>
+      <!-- ISSUE: No company registration, no address, no contact info -->
+    </div>
+  </footer>
+
+  <!-- ISSUE: No cookie consent banner anywhere on the page -->
+
+</body>
+</html>

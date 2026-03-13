@@ -1,6 +1,9 @@
 import os
 import base64
 import json
+from pydantic import ValidationError
+
+from agents.schemas import UIReport
 
 from google import genai
 from google.genai import types
@@ -34,6 +37,7 @@ def run_ui_audit(url: str, context: dict) -> dict:
     computed_styles = context.get("computed_styles", {})
     page_timing_ms = context.get("page_timing_ms", {})
     screenshot_b64 = context.get("screenshot_base64")
+    evidence_blobs = context.get("evidence_blobs", {})
 
     # Format heading outline
     heading_outline = " | ".join(
@@ -89,6 +93,16 @@ DOM CONTENT (first 6000 chars):
         config=types.GenerateContentConfig(
             system_instruction=_SYSTEM_PROMPT,
             response_mime_type="application/json",
+            temperature=0,
         ),
     )
-    return json.loads(response.text)
+    raw_data = json.loads(response.text)
+    try:
+        report = UIReport(**raw_data)
+        result = report.model_dump()
+        # Attach visual evidence to relevant findings
+        result["layout_spacing"]["evidence"] = evidence_blobs.get("heading_positions", [])
+        return result
+    except ValidationError as ve:
+        log.warning("[ui_agent] Schema validation failed: %s", ve)
+        return {"error": f"Schema validation error: {ve}"}

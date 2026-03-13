@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useAuditStream,
   type ComplianceReport,
+  type Evidence,
   type SeoReport,
   type UiReport,
   type UxReport,
@@ -20,7 +21,7 @@ type AgentState = {
   line: string;
 };
 
-type Check = { label: string; pass: boolean; note?: string };
+type Check = { label: string; pass: boolean; note?: string; evidence?: Evidence[] };
 
 const AGENTS: { id: AgentId; name: string; color: string; glow: string }[] = [
   { id: "ui", name: "UI Agent", color: "#8b5cf6", glow: "rgba(139,92,246,0.25)" },
@@ -169,23 +170,212 @@ function seoFactorToPass(status: string): boolean {
   return status.toLowerCase() === "pass";
 }
 
+function EvidencePanel({ evidence }: { evidence: Evidence[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+
+  if (!evidence || evidence.length === 0) return null;
+
+  return (
+    <div className="mt-3">
+      {/* Toggle button */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-xs font-semibold transition-all rounded-md px-2.5 py-1.5"
+        style={{
+          color: "#a78bfa",
+          background: expanded ? "rgba(139,92,246,0.1)" : "rgba(139,92,246,0.05)",
+          border: "1px solid rgba(139,92,246,0.15)",
+        }}
+      >
+        <svg
+          width="12" height="12" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        >
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <polyline points="21 15 16 10 5 21" />
+        </svg>
+        {expanded ? "Hide" : "View"} evidence
+        <span
+          className="px-1.5 py-0.5 rounded text-[10px] font-bold"
+          style={{ background: "rgba(139,92,246,0.2)", color: "#c4b5fd" }}
+        >
+          {evidence.length}
+        </span>
+      </button>
+
+      {/* Evidence cards */}
+      {expanded && (
+        <div className="mt-3 space-y-3 animate-fade-in">
+          {evidence.map((ev, i) => (
+            <div
+              key={`${ev.check_key}-${i}`}
+              className="rounded-xl overflow-hidden transition-all"
+              style={{
+                background: "rgba(0,0,0,0.25)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              {/* Card header */}
+              <div
+                className="flex items-center gap-2.5 px-3.5 py-2.5"
+                style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}
+              >
+                <span
+                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold"
+                  style={{ background: "rgba(239,68,68,0.15)", color: "#f87171" }}
+                >
+                  {i + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-text text-xs font-medium truncate">{ev.description}</p>
+                  {ev.element_selector && (
+                    <p className="text-[10px] font-mono mt-0.5" style={{ color: "rgba(255,255,255,0.25)" }}>
+                      {ev.element_selector}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setLightboxIdx(i)}
+                  className="shrink-0 flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md transition-colors"
+                  style={{ color: "#a78bfa", background: "rgba(139,92,246,0.1)" }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="14" y1="10" x2="21" y2="3" />
+                  </svg>
+                  Expand
+                </button>
+              </div>
+
+              {/* Image preview */}
+              <button
+                onClick={() => setLightboxIdx(i)}
+                className="w-full cursor-pointer block"
+                style={{ maxHeight: 200 }}
+              >
+                <img
+                  src={`data:image/png;base64,${ev.image_base64}`}
+                  alt={ev.description}
+                  className="w-full object-contain"
+                  style={{ maxHeight: 200, background: "#0a0a14" }}
+                />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Lightbox */}
+      {lightboxIdx !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+          style={{ background: "rgba(0,0,0,0.9)", backdropFilter: "blur(8px)" }}
+          onClick={() => setLightboxIdx(null)}
+        >
+          <div
+            className="relative flex flex-col rounded-2xl overflow-hidden"
+            style={{
+              maxWidth: "min(90vw, 800px)",
+              maxHeight: "85vh",
+              border: "1px solid rgba(255,255,255,0.1)",
+              background: "#0d0d1a",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Lightbox image */}
+            <div className="flex-1 flex items-center justify-center overflow-hidden" style={{ background: "#080812" }}>
+              <img
+                src={`data:image/png;base64,${evidence[lightboxIdx].image_base64}`}
+                alt={evidence[lightboxIdx].description}
+                className="max-w-full max-h-[65vh] object-contain"
+              />
+            </div>
+
+            {/* Lightbox info bar */}
+            <div className="px-4 py-3" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold"
+                      style={{ background: "rgba(239,68,68,0.15)", color: "#f87171" }}
+                    >
+                      Issue #{lightboxIdx + 1} of {evidence.length}
+                    </span>
+                    <span className="text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.3)" }}>
+                      {evidence[lightboxIdx].check_key}
+                    </span>
+                  </div>
+                  <p className="text-text text-sm leading-relaxed">{evidence[lightboxIdx].description}</p>
+                  {evidence[lightboxIdx].element_selector && (
+                    <p className="text-text-sub text-xs font-mono mt-1 opacity-50">{evidence[lightboxIdx].element_selector}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Close button */}
+            <button
+              onClick={() => setLightboxIdx(null)}
+              className="absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+              style={{ background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)" }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+
+            {/* Prev / Next arrows */}
+            {evidence.length > 1 && (
+              <>
+                <button
+                  onClick={() => setLightboxIdx((lightboxIdx - 1 + evidence.length) % evidence.length)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full flex items-center justify-center transition-colors"
+                  style={{ background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)" }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => setLightboxIdx((lightboxIdx + 1) % evidence.length)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full flex items-center justify-center transition-colors"
+                  style={{ background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)" }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function buildUiChecks(report: UiReport | null): Check[] {
   if (!report) return [];
   return [
-    { label: "Layout & spacing", pass: report.layout_spacing.score >= 6, note: report.layout_spacing.findings },
-    { label: "Responsiveness", pass: report.responsiveness.score >= 6, note: report.responsiveness.findings },
-    { label: "Typography", pass: report.typography.score >= 6, note: report.typography.findings },
-    { label: "Color coherence", pass: report.color_coherence.score >= 6, note: report.color_coherence.findings },
+    { label: "Layout & spacing", pass: report.layout_spacing.score >= 6, note: report.layout_spacing.findings, evidence: report.layout_spacing.evidence },
+    { label: "Responsiveness", pass: report.responsiveness.score >= 6, note: report.responsiveness.findings, evidence: report.responsiveness.evidence },
+    { label: "Typography", pass: report.typography.score >= 6, note: report.typography.findings, evidence: report.typography.evidence },
+    { label: "Color coherence", pass: report.color_coherence.score >= 6, note: report.color_coherence.findings, evidence: report.color_coherence.evidence },
   ];
 }
 
 function buildUxChecks(report: UxReport | null): Check[] {
   if (!report) return [];
   return [
-    { label: "Accessibility", pass: report.accessibility.score >= 6, note: report.accessibility.findings },
-    { label: "UX friction", pass: report.ux_friction.score >= 6, note: report.ux_friction.findings },
-    { label: "Navigation & IA", pass: report.navigation_ia.score >= 6, note: report.navigation_ia.findings },
-    { label: "Inclusivity", pass: report.inclusivity.score >= 6, note: report.inclusivity.findings },
+    { label: "Accessibility", pass: report.accessibility.score >= 6, note: report.accessibility.findings, evidence: report.accessibility.evidence },
+    { label: "UX friction", pass: report.ux_friction.score >= 6, note: report.ux_friction.findings, evidence: report.ux_friction.evidence },
+    { label: "Navigation & IA", pass: report.navigation_ia.score >= 6, note: report.navigation_ia.findings, evidence: report.navigation_ia.evidence },
+    { label: "Inclusivity", pass: report.inclusivity.score >= 6, note: report.inclusivity.findings, evidence: report.inclusivity.evidence },
   ];
 }
 
@@ -196,16 +386,19 @@ function buildComplianceChecks(report: ComplianceReport | null): Check[] {
       label: `Data privacy (${report.data_privacy.risk_level})`,
       pass: mapRiskToPass(report.data_privacy.risk_level),
       note: report.data_privacy.findings,
+      evidence: report.data_privacy.evidence,
     },
     {
       label: `Legal transparency (${report.legal_transparency.risk_level})`,
       pass: mapRiskToPass(report.legal_transparency.risk_level),
       note: report.legal_transparency.findings,
+      evidence: report.legal_transparency.evidence,
     },
     {
       label: `Accessibility compliance (${report.accessibility_compliance.risk_level})`,
       pass: mapRiskToPass(report.accessibility_compliance.risk_level),
       note: report.accessibility_compliance.findings,
+      evidence: report.accessibility_compliance.evidence,
     },
   ];
 }
@@ -513,59 +706,65 @@ export default function AnalysisDashboard() {
 
             <div key={activeTab} className="animate-fade-in">
               {activeTab === "overall" ? (
-                <div className="grid lg:grid-cols-3 gap-5">
-                  <div className="glass-card rounded-xl p-6 flex flex-col items-center justify-center">
-                    <CircularGauge score={scores.overall} />
-                    <div className="mt-4 w-full space-y-2.5">
-                      {(["ui", "ux", "compliance", "seo"] as AgentId[]).map((k) => (
-                        <div key={k} className="flex items-center gap-2">
-                          <span className="text-text-sub text-xs w-24 capitalize">{k}</span>
-                          <ScoreBar score={scores[k]} color={SCORE_COLORS[k]} />
-                        </div>
-                      ))}
+                <div className="space-y-5">
+                  {/* TOP ROW: Score + Executive Summary side by side */}
+                  <div className="grid lg:grid-cols-3 gap-5">
+                    {/* Score card — compact, gauge only */}
+                    <div className="glass-card rounded-xl p-5 flex flex-col items-center justify-center">
+                      <CircularGauge score={scores.overall} />
                     </div>
-                  </div>
 
-                  <div className="lg:col-span-2 space-y-4">
-                    <div className="glass-card rounded-xl p-6">
+                    {/* Executive Summary with agent score bars */}
+                    <div className="lg:col-span-2 glass-card rounded-xl p-6">
                       <h3 className="text-text font-semibold mb-3 flex items-center gap-2">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
                         </svg>
                         Executive Summary
                       </h3>
-                      <p className="text-text-sub text-sm leading-relaxed">{summaries.overall}</p>
-                    </div>
-
-                    <div className="glass-card rounded-xl p-6">
-                      <h3 className="text-text font-semibold mb-4">Priority Actions</h3>
-                      <div className="space-y-3">
-                        {actions.length === 0 && <p className="text-text-sub text-sm">No recommendations yet.</p>}
-                        {actions.map((action, i) => {
-                          const priorityColor = action.priority === "Critical" ? "#ef4444" : action.priority === "High" ? "#f59e0b" : "#8b5cf6";
-                          return (
-                            <div key={`${action.text}-${i}`} className="flex gap-3 items-start p-3 rounded-lg" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                              <span className="shrink-0 w-6 h-6 rounded-full bg-black/40 text-xs font-bold flex items-center justify-center" style={{ color: priorityColor, border: `1px solid ${priorityColor}40` }}>
-                                {i + 1}
-                              </span>
-                              <div>
-                                <span className="text-xs font-semibold mr-2" style={{ color: priorityColor }}>{action.priority}</span>
-                                <span className="text-text-sub text-sm">{action.text}</span>
-                              </div>
-                            </div>
-                          );
-                        })}
+                      <p className="text-text-sub text-sm leading-relaxed mb-4">{summaries.overall}</p>
+                      <div className="space-y-2.5">
+                        {(["ui", "ux", "compliance", "seo"] as AgentId[]).map((k) => (
+                          <div key={k} className="flex items-center gap-2">
+                            <span className="text-text-sub text-xs w-24 capitalize">{k}</span>
+                            <ScoreBar score={scores[k]} color={SCORE_COLORS[k]} />
+                          </div>
+                        ))}
                       </div>
+                    </div>
+                  </div>
+
+                  {/* BOTTOM ROW: Priority Actions — full width */}
+                  <div className="glass-card rounded-xl p-6">
+                    <h3 className="text-text font-semibold mb-4">Priority Actions</h3>
+                    <div className="space-y-3">
+                      {actions.length === 0 && <p className="text-text-sub text-sm">No recommendations yet.</p>}
+                      {actions.map((action, i) => {
+                        const priorityColor = action.priority === "Critical" ? "#ef4444" : action.priority === "High" ? "#f59e0b" : "#8b5cf6";
+                        return (
+                          <div key={`${action.text}-${i}`} className="flex gap-3 items-start p-3 rounded-lg" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                            <span className="shrink-0 w-6 h-6 rounded-full bg-black/40 text-xs font-bold flex items-center justify-center" style={{ color: priorityColor, border: `1px solid ${priorityColor}40` }}>
+                              {i + 1}
+                            </span>
+                            <div>
+                              <span className="text-xs font-semibold mr-2" style={{ color: priorityColor }}>{action.priority}</span>
+                              <span className="text-text-sub text-sm">{action.text}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="grid lg:grid-cols-3 gap-5">
-                  <div className="glass-card rounded-xl p-6 flex flex-col items-center justify-center gap-4">
-                    <div>
+                <div className="space-y-5">
+                  {/* TOP ROW: Score + Insights side by side */}
+                  <div className="grid lg:grid-cols-3 gap-5">
+                    {/* Score card — compact, fixed height */}
+                    <div className="glass-card rounded-xl p-5 flex flex-col items-center justify-center">
                       <p className="text-text-sub text-xs text-center mb-2 capitalize">{activeTab} Score</p>
                       <div className="relative flex items-center justify-center">
-                        <svg width="120" height="120" viewBox="0 0 120 120">
+                        <svg width="100" height="100" viewBox="0 0 120 120">
                           <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="8" />
                           <circle
                             cx="60"
@@ -588,35 +787,14 @@ export default function AnalysisDashboard() {
                           </text>
                         </svg>
                       </div>
+
+                      {activeTab === "compliance" && complianceReport && (
+                        <p className="text-xs text-text-sub mt-2">Risk score: {complianceReport.overall_risk_score}/10</p>
+                      )}
                     </div>
 
-                    {activeTab === "compliance" && complianceReport && (
-                      <p className="text-xs text-text-sub">Risk score: {complianceReport.overall_risk_score}/10 (lower is better)</p>
-                    )}
-
-                    <div className="w-full space-y-1.5">
-                      {(checks[activeTab as AgentId] || []).map((c) => (
-                        <div key={c.label} className="flex items-center gap-2">
-                          <span className="w-3.5 h-3.5 rounded-full shrink-0 flex items-center justify-center" style={{ background: c.pass ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)" }}>
-                            {c.pass ? (
-                              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="20 6 9 17 4 12" />
-                              </svg>
-                            ) : (
-                              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-                                <line x1="18" y1="6" x2="6" y2="18" />
-                                <line x1="6" y1="6" x2="18" y2="18" />
-                              </svg>
-                            )}
-                          </span>
-                          <span className="text-text-sub text-xs truncate capitalize">{c.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="lg:col-span-2 space-y-4">
-                    <div className="glass-card rounded-xl p-6">
+                    {/* Insights card */}
+                    <div className="lg:col-span-2 glass-card rounded-xl p-6">
                       <h3 className="text-text font-semibold mb-3 flex items-center gap-2 capitalize">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={SCORE_COLORS[activeTab as AgentId]} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <circle cx="12" cy="12" r="10" />
@@ -627,41 +805,51 @@ export default function AnalysisDashboard() {
                       </h3>
                       <p className="text-text-sub text-sm leading-relaxed">{summaries[activeTab as AgentId]}</p>
                     </div>
+                  </div>
 
-                    <div className="glass-card rounded-xl p-6">
-                      <h3 className="text-text font-semibold mb-4">Detailed Checks</h3>
-                      <div className="space-y-2">
-                        {(checks[activeTab as AgentId] || []).map((check, i) => (
+                  {/* BOTTOM ROW: Detailed Checks — full width */}
+                  <div className="glass-card rounded-xl p-6">
+                    <h3 className="text-text font-semibold mb-4">Detailed Checks</h3>
+                    <div className="space-y-3">{(checks[activeTab as AgentId] || []).map((check, i) => (
                           <div
                             key={`${check.label}-${i}`}
-                            className="flex items-start gap-3 p-3 rounded-lg transition-colors"
+                            className="rounded-xl transition-colors"
                             style={{ background: check.pass ? "rgba(34,197,94,0.04)" : "rgba(239,68,68,0.05)", border: `1px solid ${check.pass ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.12)"}` }}
                           >
-                            <span className="mt-0.5 w-5 h-5 rounded-full shrink-0 flex items-center justify-center" style={{ background: check.pass ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)" }}>
-                              {check.pass ? (
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="20 6 9 17 4 12" />
-                                </svg>
-                              ) : (
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                  <line x1="18" y1="6" x2="6" y2="18" />
-                                  <line x1="6" y1="6" x2="18" y2="18" />
-                                </svg>
-                              )}
-                            </span>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-text text-sm font-medium capitalize">{check.label}</p>
-                              {check.note && <p className="text-[11px] mt-0.5" style={{ color: check.pass ? "#22c55e99" : "#ef444499" }}>{check.note}</p>}
+                            {/* Check header row */}
+                            <div className="flex items-start gap-3 p-4">
+                              <span className="mt-0.5 w-5 h-5 rounded-full shrink-0 flex items-center justify-center" style={{ background: check.pass ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)" }}>
+                                {check.pass ? (
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                ) : (
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                  </svg>
+                                )}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-text text-sm font-medium capitalize">{check.label}</p>
+                                {check.note && <p className="text-[12px] mt-1 leading-relaxed" style={{ color: check.pass ? "#22c55eaa" : "#ef4444aa" }}>{check.note}</p>}
+                              </div>
+                              <span
+                                className="shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                                style={{ background: check.pass ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", color: check.pass ? "#22c55e" : "#ef4444" }}
+                              >
+                                {check.pass ? "PASS" : "FAIL"}
+                              </span>
                             </div>
-                            <span
-                              className="shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                              style={{ background: check.pass ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", color: check.pass ? "#22c55e" : "#ef4444" }}
-                            >
-                              {check.pass ? "PASS" : "FAIL"}
-                            </span>
+
+                            {/* Evidence section — inside the check card, below the header */}
+                            {check.evidence && check.evidence.length > 0 && (
+                              <div className="px-4 pb-4" style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+                                <EvidencePanel evidence={check.evidence} />
+                              </div>
+                            )}
                           </div>
                         ))}
-                      </div>
                     </div>
                   </div>
                 </div>

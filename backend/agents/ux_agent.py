@@ -1,8 +1,10 @@
 import os
-import re
 import json
 import time
 import logging
+from pydantic import ValidationError
+
+from agents.schemas import UXReport
 
 from gradient import Gradient
 from gradient import APITimeoutError, APIConnectionError
@@ -39,6 +41,7 @@ def run_ux_audit(url: str, context: dict) -> dict:
     headings = context.get("headings", [])          # [{"tag": "h1", "text": "..."}, ...]
     visible_text = context.get("visible_text", "")  # cleaned body text
     all_links = context.get("all_links", [])        # [{"text": "...", "href": "..."}, ...]
+    evidence_blobs = context.get("evidence_blobs", {})
 
     # Format headings as a readable outline (e.g. H1: About Us | H2: Our Mission)
     heading_outline = " | ".join(
@@ -82,12 +85,34 @@ VISIBLE PAGE TEXT (cleaned, first 5000 chars):
                     {"role": "user", "content": text_prompt},
                 ],
                 model=_MODEL,
+                temperature=0,
             )
             raw = response.choices[0].message.content
-            match = re.search(r"\{[\s\S]*\}", raw)
-            if match:
-                return json.loads(match.group())
-            return {"error": "Failed to parse UX report", "raw": raw}
+            # Two-pass parse: direct JSON first, then regex fallback
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                import re
+                m = re.search(r"\{[\s\S]*\}", raw)
+                if not m:
+                    log.error("[ux_auditor] No JSON block found in response")
+                    return {"error": "Failed to parse UX report — no JSON block found", "raw": raw[:500]}
+                try:
+                    data = json.loads(m.group())
+                except json.JSONDecodeError as je:
+                    log.error("[ux_auditor] JSON decode failed: %s", je)
+                    return {"error": f"JSON decode error: {je}", "raw": raw[:500]}
+            # Validate schema
+            try:
+                report = UXReport(**data)
+                result = report.model_dump()
+                # Attach visual evidence to relevant findings
+                result["accessibility"]["evidence"] = evidence_blobs.get("missing_alt_text", [])
+                result["ux_friction"]["evidence"] = evidence_blobs.get("unlabeled_inputs", [])
+                return result
+            except ValidationError as ve:
+                log.error("[ux_auditor] Schema validation failed: %s", ve)
+                return {"error": f"Schema validation error: {ve}"}
 
         except (APITimeoutError, APIConnectionError) as exc:
             if attempt < _MAX_RETRIES:

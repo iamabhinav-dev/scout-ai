@@ -8,3 +8,4 @@ google-genai
 fastapi
 uvicorn
 beautifulsoup4
+Pillow

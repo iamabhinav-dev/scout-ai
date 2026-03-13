@@ -6,9 +6,17 @@ import { useEffect, useState } from "react";
 // Types — mirror the backend JSON schemas exactly
 // ---------------------------------------------------------------------------
 
+export interface Evidence {
+  check_key: string;
+  description: string;
+  image_base64: string;
+  element_selector?: string;
+}
+
 export interface AuditCategory {
   score: number;       // 1–10
   findings: string;
+  evidence?: Evidence[];
 }
 
 export interface UiReport {
@@ -34,6 +42,7 @@ export interface UxReport {
 export interface ComplianceRiskCategory {
   risk_level: "Low" | "Medium" | "High" | string;
   findings: string;
+  evidence?: Evidence[];
 }
 
 export interface ComplianceReport {
