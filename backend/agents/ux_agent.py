@@ -36,18 +36,36 @@ def run_ux_audit(url: str, context: dict) -> dict:
         return {"error": context["error"]}
 
     summary = context["accessibility_summary"]
-    dom_snippet = context["dom"][:6000]
+    headings = context.get("headings", [])          # [{"tag": "h1", "text": "..."}, ...]
+    visible_text = context.get("visible_text", "")  # cleaned body text
+    all_links = context.get("all_links", [])        # [{"text": "...", "href": "..."}, ...]
+
+    # Format headings as a readable outline (e.g. H1: About Us | H2: Our Mission)
+    heading_outline = " | ".join(
+        f"{h['tag'].upper()}: {h['text']}" for h in headings[:30]
+    ) or "No headings found"
+
+    # Summarise navigation links (cap to 30 to stay within token budget)
+    link_summary = "\n".join(
+        f"  [{l['text'][:60]}] -> {l['href'][:100]}" for l in all_links[:30]
+    ) or "No links found"
 
     text_prompt = f"""Perform a UX and accessibility audit on: {url}
 
-ACCESSIBILITY SUMMARY:
+ACCESSIBILITY SIGNALS:
 - Total images: {summary['images_total']}, missing alt text: {summary['images_missing_alt']}
-- Heading hierarchy: {summary['heading_hierarchy']}
+- Heading tag order: {summary['heading_hierarchy']}
 - Total form inputs: {summary['total_inputs']}, labeled: {summary['labeled_inputs']}
 - ARIA roles present: {summary['aria_roles_found']}
 
-DOM CONTENT (first 6000 chars):
-{dom_snippet}
+PAGE HEADING OUTLINE (H1 → H6 with actual text):
+{heading_outline}
+
+TOP NAVIGATION LINKS (text → href):
+{link_summary}
+
+VISIBLE PAGE TEXT (cleaned, first 5000 chars):
+{visible_text[:5000]}
 
 {_JSON_SCHEMA}"""
 

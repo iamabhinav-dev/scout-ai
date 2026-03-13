@@ -30,17 +30,46 @@ def run_ui_audit(url: str, context: dict) -> dict:
         return {"error": context["error"]}
 
     summary = context["accessibility_summary"]
-    dom_snippet = context["dom"][:6000]
+    headings = context.get("headings", [])            # structured [{tag, text}]
+    computed_styles = context.get("computed_styles", {})
+    page_timing_ms = context.get("page_timing_ms", {})
     screenshot_b64 = context.get("screenshot_base64")
+
+    # Format heading outline
+    heading_outline = " | ".join(
+        f"{h['tag'].upper()}: {h['text']}" for h in headings[:20]
+    ) or "No headings found"
+
+    # Format computed styles block
+    styles_block = "\n".join(
+        f"  {k}: {v}" for k, v in computed_styles.items()
+    ) or "  Not available"
+
+    # Format timing block
+    timing_block = (
+        f"  DOM Content Loaded: {page_timing_ms.get('dom_content_loaded', 'N/A')} ms\n"
+        f"  Page Load: {page_timing_ms.get('load', 'N/A')} ms\n"
+        f"  TTFB: {page_timing_ms.get('ttfb', 'N/A')} ms\n"
+        f"  DOM Interactive: {page_timing_ms.get('dom_interactive', 'N/A')} ms"
+    )
 
     text_prompt = f"""Perform a UI (visual design & layout) audit on: {url}
 
 PAGE SIGNALS:
 - Has viewport meta tag: {summary['has_viewport_meta']}
-- Heading hierarchy: {summary['heading_hierarchy']}
+- Heading tag order: {summary['heading_hierarchy']}
+
+PAGE HEADING OUTLINE (H1 → H6 with actual text):
+{heading_outline}
+
+COMPUTED BODY STYLES (from browser):
+{styles_block}
+
+PAGE PERFORMANCE TIMING:
+{timing_block}
 
 DOM CONTENT (first 6000 chars):
-{dom_snippet}
+{context["dom"][:6000]}
 
 {_JSON_SCHEMA}"""
 
