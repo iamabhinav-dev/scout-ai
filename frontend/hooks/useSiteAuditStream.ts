@@ -19,16 +19,26 @@ export interface PageAuditResult {
   seoReport:        Record<string, any> | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   complianceReport: Record<string, any> | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pageSecurityFindings: Array<Record<string, any>> | null;
   error:            string | null;
   index:            number;
 }
 
+export interface SiteSecurityReport {
+  overall_score: number;
+  counts: { critical: number; high: number; medium: number; low: number };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  site_wide_findings: Array<Record<string, any>>;
+}
+
 export interface SiteAuditStreamResult {
-  auditStatus:     AuditStatus;
-  pageAudits:      Map<string, PageAuditResult>;
-  currentAuditUrl: string | null;
-  auditProgress:   { completed: number; total: number };
-  auditError:      string | null;
+  auditStatus:        AuditStatus;
+  pageAudits:         Map<string, PageAuditResult>;
+  currentAuditUrl:    string | null;
+  auditProgress:      { completed: number; total: number };
+  auditError:         string | null;
+  siteSecurityReport: SiteSecurityReport | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,11 +63,12 @@ export function useSiteAuditStream(
   accessToken?: string | null,
   existingCrawlSessionId?: string,
 ): SiteAuditStreamResult {
-  const [auditStatus,     setAuditStatus]     = useState<AuditStatus>("idle");
-  const [pageAudits,      setPageAudits]      = useState<Map<string, PageAuditResult>>(new Map());
-  const [currentAuditUrl, setCurrentAuditUrl] = useState<string | null>(null);
-  const [auditProgress,   setAuditProgress]   = useState({ completed: 0, total: 0 });
-  const [auditError,      setAuditError]      = useState<string | null>(null);
+  const [auditStatus,        setAuditStatus]        = useState<AuditStatus>("idle");
+  const [pageAudits,         setPageAudits]         = useState<Map<string, PageAuditResult>>(new Map());
+  const [currentAuditUrl,    setCurrentAuditUrl]    = useState<string | null>(null);
+  const [auditProgress,      setAuditProgress]      = useState({ completed: 0, total: 0 });
+  const [auditError,         setAuditError]         = useState<string | null>(null);
+  const [siteSecurityReport, setSiteSecurityReport] = useState<SiteSecurityReport | null>(null);
 
   // Captured at the time `enabled` becomes true (crawl is complete)
   const urlsRef      = useRef<string[]>([]);
@@ -73,6 +84,7 @@ export function useSiteAuditStream(
       setCurrentAuditUrl(null);
       setAuditProgress({ completed: 0, total: 0 });
       setAuditError(null);
+      setSiteSecurityReport(null);
       return;
     }
 
@@ -126,6 +138,7 @@ export function useSiteAuditStream(
             ux_report: Record<string, unknown> | null;
             seo_report: Record<string, unknown> | null;
             compliance_report: Record<string, unknown> | null;
+            page_security_findings?: Array<Record<string, unknown>> | null;
             overall_score: number | null;
           }[] ?? [];
 
@@ -144,10 +157,16 @@ export function useSiteAuditStream(
               uxReport: (p.ux_report as Record<string, unknown>) ?? null,
               seoReport: (p.seo_report as Record<string, unknown>) ?? null,
               complianceReport: (p.compliance_report as Record<string, unknown>) ?? null,
+              pageSecurityFindings: (p.page_security_findings as Array<Record<string, unknown>>) ?? null,
               error: null,
               index: idx + 1,
             });
           });
+
+          // Restore site-level security summary from DB response
+          if (data.security_summary) {
+            setSiteSecurityReport(data.security_summary as SiteSecurityReport);
+          }
 
           setPageAudits(map);
           setAuditProgress({ completed: auditPages.length, total: auditPages.length });
@@ -236,7 +255,7 @@ export function useSiteAuditStream(
             const next = new Map(prev);
             next.set(ev.url, {
               url: ev.url, status: "auditing",
-              uiReport: null, uxReport: null, seoReport: null, complianceReport: null,
+              uiReport: null, uxReport: null, seoReport: null, complianceReport: null, pageSecurityFindings: null,
               error: null, index: ev.index ?? 0,
             });
             return next;
@@ -253,6 +272,7 @@ export function useSiteAuditStream(
               uxReport:         ev.ux_report         ?? null,
               seoReport:        ev.seo_report        ?? null,
               complianceReport: ev.compliance_report ?? null,
+              pageSecurityFindings: ev.page_security_findings ?? null,
               error:            null,
               index:            ev.index ?? 0,
             });
@@ -266,7 +286,7 @@ export function useSiteAuditStream(
             const next = new Map(prev);
             next.set(ev.url, {
               url: ev.url, status: "error",
-              uiReport: null, uxReport: null, seoReport: null, complianceReport: null,
+              uiReport: null, uxReport: null, seoReport: null, complianceReport: null, pageSecurityFindings: null,
               error: ev.error ?? "Unknown error",
               index: ev.index ?? 0,
             });
@@ -277,6 +297,13 @@ export function useSiteAuditStream(
 
         case "site_audit_complete":
           setCurrentAuditUrl(null);
+          if (ev.security_overall_score != null) {
+            setSiteSecurityReport({
+              overall_score: ev.security_overall_score,
+              counts: ev.security_counts ?? { critical: 0, high: 0, medium: 0, low: 0 },
+              site_wide_findings: ev.security_site_wide_findings ?? [],
+            });
+          }
           break;
 
         case "error":
@@ -309,5 +336,5 @@ export function useSiteAuditStream(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auditStatus]);
 
-  return { auditStatus, pageAudits, currentAuditUrl, auditProgress, auditError };
+  return { auditStatus, pageAudits, currentAuditUrl, auditProgress, auditError, siteSecurityReport };
 }

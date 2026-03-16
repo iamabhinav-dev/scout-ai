@@ -373,7 +373,7 @@ class BFSCrawler:
 
                 db_link_tasks.append(asyncio.to_thread(
                     db.insert_link,
-                    self.session_id, page_id or '',
+                    self.session_id, page_id,
                     link_url, link_text,
                     cr.get('status_code'), link_status,
                     is_internal, cr.get('final_url', link_url),

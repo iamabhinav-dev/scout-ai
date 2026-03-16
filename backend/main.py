@@ -27,6 +27,7 @@ from agents.ui_agent import run_ui_audit
 from agents.ux_agent import run_ux_audit
 from agents.compliance_agent import run_compliance_audit
 from agents.seo_agent import run_seo_audit
+from agents.security_agent import run_security_audit, run_site_wide_security_audit, run_page_content_security_check
 from tools.seo_scraper import fetch_raw_html
 from tools.vision_scraper import capture_website_context
 
@@ -41,6 +42,7 @@ class ScoutState(TypedDict):
     ux_report: dict
     compliance_report: dict
     seo_report: dict
+    security_report: dict
 
 # ---------------------------------------------------------------------------
 # 2. Graph nodes
@@ -135,6 +137,24 @@ def seo_audit_node(state: ScoutState) -> dict:
     return {"seo_report": report}
 
 
+def security_audit_node(state: ScoutState) -> dict:
+    """Run the passive Security audit."""
+    log.info("[security_auditor] START  mode=passive")
+    t0 = time.perf_counter()
+    report = run_security_audit(urls=[state["target_url"]], mode="passive")
+    elapsed = time.perf_counter() - t0
+    if "error" in report:
+        log.error("[security_auditor] ERROR  %.1fs  %s", elapsed, report["error"])
+    else:
+        log.info(
+            "[security_auditor] DONE   %.1fs  overall_score=%s findings=%s",
+            elapsed,
+            report.get("overall_score"),
+            len(report.get("findings", [])),
+        )
+    return {"security_report": report}
+
+
 def merge_node(state: ScoutState) -> dict:
     """No-op merge point — all audit branches converge here."""
     return {}
@@ -150,24 +170,42 @@ workflow.add_node("ui_auditor", ui_audit_node)
 workflow.add_node("ux_auditor", ux_audit_node)
 workflow.add_node("compliance_auditor", compliance_audit_node)
 workflow.add_node("seo_auditor", seo_audit_node)
+workflow.add_node("security_auditor", security_audit_node)
 workflow.add_node("merge", merge_node)
 
 workflow.set_entry_point("scrape")
 
-# Fan-out: scrape -> ui_auditor + ux_auditor + compliance_auditor + seo_auditor (parallel)
+# Fan-out: scrape -> ui/ux/compliance/seo/security (parallel)
 workflow.add_edge("scrape", "ui_auditor")
 workflow.add_edge("scrape", "ux_auditor")
 workflow.add_edge("scrape", "compliance_auditor")
 workflow.add_edge("scrape", "seo_auditor")
+workflow.add_edge("scrape", "security_auditor")
 
 # Fan-in: all auditors → merge → END
 workflow.add_edge("ui_auditor", "merge")
 workflow.add_edge("ux_auditor", "merge")
 workflow.add_edge("compliance_auditor", "merge")
 workflow.add_edge("seo_auditor", "merge")
+workflow.add_edge("security_auditor", "merge")
 workflow.add_edge("merge", END)
 
 scout_graph = workflow.compile()
+
+# -- Site-audit graph: same fan-out but WITHOUT security_auditor node --------
+_site_workflow = StateGraph(ScoutState)
+_site_workflow.add_node("scrape", scrape_node)
+_site_workflow.add_node("ui_auditor", ui_audit_node)
+_site_workflow.add_node("ux_auditor", ux_audit_node)
+_site_workflow.add_node("compliance_auditor", compliance_audit_node)
+_site_workflow.add_node("seo_auditor", seo_audit_node)
+_site_workflow.add_node("merge", merge_node)
+_site_workflow.set_entry_point("scrape")
+for _n in ("ui_auditor", "ux_auditor", "compliance_auditor", "seo_auditor"):
+    _site_workflow.add_edge("scrape", _n)
+    _site_workflow.add_edge(_n, "merge")
+_site_workflow.add_edge("merge", END)
+scout_graph_no_security = _site_workflow.compile()
 
 # ---------------------------------------------------------------------------
 # 4. FastAPI + SSE streaming
@@ -199,11 +237,12 @@ def _sse(data: dict) -> str:
 
 
 def _run_graph(url: str) -> dict:
-    """Run the LangGraph synchronously and return all reports or {error}."""
+    """Run the full LangGraph (incl. security) synchronously — single-page /audit."""
     ui_report = None
     ux_report = None
     compliance_report = None
     seo_report = None
+    security_report = None
     for event in scout_graph.stream({"target_url": url}, stream_mode="updates"):
         for node_name, update in event.items():
             if node_name == "scrape":
@@ -218,11 +257,44 @@ def _run_graph(url: str) -> dict:
                 compliance_report = update.get("compliance_report")
             elif node_name == "seo_auditor":
                 seo_report = update.get("seo_report")
+            elif node_name == "security_auditor":
+                security_report = update.get("security_report")
     return {
         "ui_report": ui_report,
         "ux_report": ux_report,
         "compliance_report": compliance_report,
         "seo_report": seo_report,
+        "security_report": security_report,
+    }
+
+
+def _run_graph_site(url: str) -> dict:
+    """Run the site-audit graph (no security node). Returns reports + page_context."""
+    ui_report = None
+    ux_report = None
+    compliance_report = None
+    seo_report = None
+    page_context: dict = {}
+    for event in scout_graph_no_security.stream({"target_url": url}, stream_mode="updates"):
+        for node_name, update in event.items():
+            if node_name == "scrape":
+                page_context = update.get("page_context", {})
+                if page_context.get("error"):
+                    return {"error": page_context["error"]}
+            elif node_name == "ui_auditor":
+                ui_report = update.get("ui_report")
+            elif node_name == "ux_auditor":
+                ux_report = update.get("ux_report")
+            elif node_name == "compliance_auditor":
+                compliance_report = update.get("compliance_report")
+            elif node_name == "seo_auditor":
+                seo_report = update.get("seo_report")
+    return {
+        "ui_report": ui_report,
+        "ux_report": ux_report,
+        "compliance_report": compliance_report,
+        "seo_report": seo_report,
+        "page_context": page_context,
     }
 
 
@@ -244,6 +316,7 @@ async def _stream_audit(url: str):
             "ux_report": result["ux_report"],
             "compliance_report": result["compliance_report"],
             "seo_report": result["seo_report"],
+            "security_report": result["security_report"],
         })
 
     except Exception as exc:
@@ -517,7 +590,61 @@ async def get_crawl_audit_session(session_id: str):
             .order("created_at")
             .execute()
         )
-        return {"audit_session": audit_session, "pages": pages_res.data or []}
+
+        pages = pages_res.data or []
+
+        # Enrich with security findings split by scope
+        sec_session_res = (
+            client.table("security_sessions")
+            .select("id,overall_score,critical_count,high_count,medium_count,low_count")
+            .eq("crawl_session_id", session_id)
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        sec_session = (sec_session_res.data or [None])[0]
+        site_wide_findings: list = []
+        page_content_findings_by_url: dict[str, list] = {}
+
+        if sec_session and sec_session.get("id"):
+            sec_findings_res = (
+                client.table("security_findings")
+                .select("id,url,category,title,description,severity,confidence,recommendation,evidence_json,scope")
+                .eq("security_session_id", sec_session["id"])
+                .execute()
+            )
+            for f in (sec_findings_res.data or []):
+                scope = str(f.get("scope", "site_wide")).lower()
+                if scope == "page_content":
+                    f_url = str(f.get("url", ""))
+                    page_content_findings_by_url.setdefault(f_url, []).append(f)
+                else:
+                    site_wide_findings.append(f)
+
+            # Attach per-page findings
+            for p in pages:
+                p_url = str(p.get("url", ""))
+                pf = page_content_findings_by_url.get(p_url, [])
+                p["page_security_findings"] = pf
+
+        security_summary = None
+        if sec_session:
+            security_summary = {
+                "overall_score": sec_session.get("overall_score"),
+                "counts": {
+                    "critical": sec_session.get("critical_count", 0),
+                    "high": sec_session.get("high_count", 0),
+                    "medium": sec_session.get("medium_count", 0),
+                    "low": sec_session.get("low_count", 0),
+                },
+                "site_wide_findings": site_wide_findings,
+            }
+
+        return {
+            "audit_session": audit_session,
+            "pages": pages,
+            "security_summary": security_summary,
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -530,6 +657,12 @@ class SiteAuditRequest(BaseModel):
     session_id: Optional[str] = None
     urls: List[str]
     concurrency: Optional[int] = 2
+
+
+class SecurityRunRequest(BaseModel):
+    crawl_session_id: str
+    mode: str = "passive"
+    page_limit: int = 200
 
 
 @app.post("/audit/site")
@@ -545,7 +678,14 @@ async def audit_site(
                  page_audit_complete, page_audit_error, site_audit_complete.
     """
     async def _stream():
-        from crawler.db import create_audit_session, save_page_audit, complete_audit_session
+        from crawler.db import (
+            create_audit_session,
+            save_page_audit,
+            complete_audit_session,
+            create_security_session,
+            save_security_finding,
+            complete_security_session,
+        )
         loop = asyncio.get_event_loop()
         urls        = [u.strip() for u in req.urls if u and u.strip()]
         total       = len(urls)
@@ -572,6 +712,49 @@ async def audit_site(
             create_audit_session, root_url, req.session_id, user_id
         )
 
+        # Create one security session for this full run when crawl session is available.
+        security_session_id: str | None = None
+        if req.session_id:
+            security_session_id = await asyncio.to_thread(
+                create_security_session,
+                req.session_id,
+                "passive",
+                user_id,
+            )
+
+        # ── Run site-wide security scan ONCE on the root URL ──────────
+        site_wide_report: dict = {}
+        site_wide_findings: list = []
+        if security_session_id:
+            try:
+                site_wide_report = await asyncio.to_thread(
+                    run_site_wide_security_audit, root_url
+                )
+                site_wide_findings = site_wide_report.get("findings", [])
+                for finding in site_wide_findings:
+                    if not isinstance(finding, dict):
+                        continue
+                    try:
+                        await asyncio.to_thread(
+                            save_security_finding,
+                            security_session_id,
+                            None,
+                            finding.get("url", root_url),
+                            finding.get("category", "unknown"),
+                            finding.get("title", "Untitled finding"),
+                            finding.get("description", ""),
+                            finding.get("severity", "low"),
+                            finding.get("confidence", "medium"),
+                            finding.get("recommendation", ""),
+                            finding.get("evidence", {}),
+                            finding.get("scope", "site_wide"),
+                        )
+                    except Exception as sec_exc:
+                        log.warning("[audit/site] save site-wide finding failed: %s", sec_exc)
+                log.info("[audit/site] site-wide security done  findings=%d", len(site_wide_findings))
+            except Exception as exc:
+                log.warning("[audit/site] site-wide security failed: %s", exc)
+
         yield _sse({"type": "site_audit_started", "total": total, "urls": urls,
                     "audit_session_id": audit_session_id})
 
@@ -579,15 +762,28 @@ async def audit_site(
         q: asyncio.Queue = asyncio.Queue()
         sem = asyncio.Semaphore(concurrency)
         page_scores: list[float] = []
+        security_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        security_scanned_pages = 0
+        security_lock = asyncio.Lock()
+
+        # Seed security_counts with site-wide findings
+        for _f in site_wide_findings:
+            if isinstance(_f, dict):
+                _sev = str(_f.get("severity", "low")).lower()
+                if _sev in security_counts:
+                    security_counts[_sev] += 1
+                else:
+                    security_counts["low"] += 1
 
         async def _audit_one(url: str, idx: int) -> None:
+            nonlocal security_scanned_pages
             async with sem:
                 q.put_nowait({
                     "type": "page_audit_started",
                     "url": url, "index": idx, "total": total,
                 })
                 try:
-                    result = await loop.run_in_executor(_executor, lambda: _run_graph(url))
+                    result = await loop.run_in_executor(_executor, lambda: _run_graph_site(url))
                     if "error" in result:
                         q.put_nowait({
                             "type": "page_audit_error",
@@ -621,7 +817,55 @@ async def audit_site(
                             page_score,
                         )
 
-                        q.put_nowait({
+                        # ── Per-page content security (no HTTP fetch) ──
+                        page_ctx = result.get("page_context") or {}
+                        page_sec_findings: list = []
+                        try:
+                            sec_result = await asyncio.to_thread(
+                                run_page_content_security_check,
+                                url,
+                                page_ctx.get("final_url", url),
+                                page_ctx.get("dom", ""),
+                            )
+                            page_sec_findings = sec_result.get("findings", [])
+                        except Exception as sec_exc:
+                            log.warning("[audit/site] page content security failed for %s: %s", url, sec_exc)
+
+                        if page_sec_findings and security_session_id:
+                            for finding in page_sec_findings:
+                                if not isinstance(finding, dict):
+                                    continue
+                                try:
+                                    await asyncio.to_thread(
+                                        save_security_finding,
+                                        security_session_id,
+                                        finding.get("page_id"),
+                                        finding.get("url", url),
+                                        finding.get("category", "unknown"),
+                                        finding.get("title", "Untitled finding"),
+                                        finding.get("description", ""),
+                                        finding.get("severity", "low"),
+                                        finding.get("confidence", "medium"),
+                                        finding.get("recommendation", ""),
+                                        finding.get("evidence", {}),
+                                        finding.get("scope", "page_content"),
+                                    )
+                                except Exception as sec_exc:
+                                    log.warning("[audit/site] save page finding failed for %s: %s", url, sec_exc)
+
+                        if page_sec_findings:
+                            async with security_lock:
+                                security_scanned_pages += 1
+                                for finding in page_sec_findings:
+                                    if not isinstance(finding, dict):
+                                        continue
+                                    sev = str(finding.get("severity", "low")).lower()
+                                    if sev in security_counts:
+                                        security_counts[sev] += 1
+                                    else:
+                                        security_counts["low"] += 1
+
+                        ev: dict = {
                             "type":              "page_audit_complete",
                             "url":               url,
                             "index":             idx,
@@ -631,7 +875,10 @@ async def audit_site(
                             "seo_report":        result["seo_report"],
                             "compliance_report": result["compliance_report"],
                             "audit_session_id":  audit_session_id,
-                        })
+                        }
+                        if page_sec_findings:
+                            ev["page_security_findings"] = page_sec_findings
+                        q.put_nowait(ev)
                 except Exception as exc:
                     log.exception("[audit/site] url=%s  %s", url, exc)
                     q.put_nowait({
@@ -660,12 +907,35 @@ async def audit_site(
 
         elapsed = time.perf_counter() - t0
         log.info("[request] SITE AUDIT DONE   total=%.1fs  pages=%d", elapsed, total)
+
+        # Final security score across site-wide + per-page findings
+        sec_penalty = (
+            security_counts["critical"] * 20
+            + security_counts["high"] * 10
+            + security_counts["medium"] * 4
+            + security_counts["low"] * 1
+        )
+        security_overall_score = max(0, 100 - sec_penalty)
+
+        if security_session_id:
+            await asyncio.to_thread(
+                complete_security_session,
+                security_session_id,
+                security_overall_score,
+                security_scanned_pages,
+                security_counts,
+            )
+
         yield _sse({
             "type":             "site_audit_complete",
             "total":            total,
             "duration_ms":      int(elapsed * 1000),
             "overall_score":    overall_score,
             "audit_session_id": audit_session_id,
+            "security_session_id":        security_session_id,
+            "security_overall_score":     security_overall_score,
+            "security_counts":            security_counts,
+            "security_site_wide_findings": site_wide_findings,
         })
 
     return StreamingResponse(
@@ -696,6 +966,215 @@ async def get_audit_session_pages(
         return {"pages": res.data or []}
     except Exception as e:
         return {"error": str(e), "pages": []}
+
+
+# ---------------------------------------------------------------------------
+# 8.  Security Audit  (Phase 5 - V1 passive)
+# ---------------------------------------------------------------------------
+
+@app.post("/security/run")
+async def run_security_scan(
+    req: SecurityRunRequest,
+    user: dict | None = Depends(get_current_user_optional),
+):
+    """Run a passive security scan for URLs under an existing crawl session."""
+    from crawler.db import (
+        _get_client,
+        create_security_session,
+        save_security_finding,
+        complete_security_session,
+    )
+
+    client = _get_client()
+    if not client:
+        return JSONResponse(status_code=500, content={"error": "Database not configured"})
+
+    try:
+        # Verify crawl session exists and, when user is authenticated, enforce ownership.
+        crawl_res = (
+            client.table("crawl_sessions")
+            .select("id,user_id")
+            .eq("id", req.crawl_session_id)
+            .single()
+            .execute()
+        )
+        crawl_row = crawl_res.data or {}
+        if not crawl_row:
+            return JSONResponse(status_code=404, content={"error": "Crawl session not found"})
+
+        if user and crawl_row.get("user_id") and crawl_row.get("user_id") != user["id"]:
+            return JSONResponse(status_code=403, content={"error": "Not authorised"})
+
+        pages_res = (
+            client.table("crawled_pages")
+            .select("id,url")
+            .eq("session_id", req.crawl_session_id)
+            .limit(max(1, min(req.page_limit, 1000)))
+            .execute()
+        )
+        pages = pages_res.data or []
+        if not pages:
+            return JSONResponse(status_code=400, content={"error": "No crawled pages found for this session"})
+
+        page_id_by_url = {str(p.get("url", "")): str(p.get("id", "")) for p in pages if p.get("url") and p.get("id")}
+        urls = [str(p.get("url")) for p in pages if p.get("url")]
+
+        security_session_id = await asyncio.to_thread(
+            create_security_session,
+            req.crawl_session_id,
+            req.mode,
+            user["id"] if user else crawl_row.get("user_id"),
+        )
+
+        result = await asyncio.to_thread(
+            run_security_audit,
+            urls,
+            req.mode,
+            page_id_by_url,
+        )
+        if result.get("error"):
+            return JSONResponse(status_code=400, content=result)
+
+        findings = result.get("findings", [])
+        for finding in findings:
+            await asyncio.to_thread(
+                save_security_finding,
+                security_session_id,
+                finding.get("page_id"),
+                finding.get("url", ""),
+                finding.get("category", "unknown"),
+                finding.get("title", "Untitled finding"),
+                finding.get("description", ""),
+                finding.get("severity", "low"),
+                finding.get("confidence", "medium"),
+                finding.get("recommendation", ""),
+                finding.get("evidence", {}),
+            )
+
+        await asyncio.to_thread(
+            complete_security_session,
+            security_session_id,
+            result.get("overall_score"),
+            int(result.get("scanned_pages", 0)),
+            result.get("counts", {}),
+        )
+
+        return {
+            "security_session_id": security_session_id,
+            "crawl_session_id": req.crawl_session_id,
+            "mode": result.get("mode", req.mode),
+            "overall_score": result.get("overall_score"),
+            "counts": result.get("counts", {}),
+            "scanned_pages": result.get("scanned_pages", 0),
+            "total_findings": len(findings),
+        }
+    except Exception as e:
+        log.exception("[security/run] Failed: %s", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/security/session/{security_session_id}")
+async def get_security_session(
+    security_session_id: str,
+    user: dict | None = Depends(get_current_user_optional),
+):
+    """Return one security session summary row."""
+    from crawler.db import _get_client
+
+    client = _get_client()
+    if not client:
+        return {"error": "Database not configured"}
+    try:
+        res = (
+            client.table("security_sessions")
+            .select("*")
+            .eq("id", security_session_id)
+            .single()
+            .execute()
+        )
+        row = res.data or {}
+        if user and row.get("user_id") and row.get("user_id") != user["id"]:
+            return JSONResponse(status_code=403, content={"error": "Not authorised"})
+        return {"security_session": row}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/security/session/{security_session_id}/findings")
+async def get_security_findings(
+    security_session_id: str,
+    limit: int = 1000,
+    offset: int = 0,
+    user: dict | None = Depends(get_current_user_optional),
+):
+    """Return findings for a security session."""
+    from crawler.db import _get_client
+
+    client = _get_client()
+    if not client:
+        return {"error": "Database not configured", "findings": []}
+    try:
+        session_res = (
+            client.table("security_sessions")
+            .select("id,user_id")
+            .eq("id", security_session_id)
+            .single()
+            .execute()
+        )
+        row = session_res.data or {}
+        if user and row.get("user_id") and row.get("user_id") != user["id"]:
+            return JSONResponse(status_code=403, content={"error": "Not authorised", "findings": []})
+
+        res = (
+            client.table("security_findings")
+            .select("id,page_id,url,category,title,description,severity,confidence,recommendation,evidence_json,created_at")
+            .eq("security_session_id", security_session_id)
+            .range(offset, offset + max(1, min(limit, 5000)) - 1)
+            .execute()
+        )
+        return {"findings": res.data or [], "offset": offset, "limit": limit}
+    except Exception as e:
+        return {"error": str(e), "findings": []}
+
+
+@app.get("/crawl/{session_id}/security")
+async def get_latest_security_for_crawl(
+    session_id: str,
+    user: dict | None = Depends(get_current_user_optional),
+):
+    """Return latest security session and its findings for a crawl session."""
+    from crawler.db import _get_client
+
+    client = _get_client()
+    if not client:
+        return {"error": "Database not configured", "security_session": None, "findings": []}
+
+    try:
+        sess_res = (
+            client.table("security_sessions")
+            .select("*")
+            .eq("crawl_session_id", session_id)
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not sess_res.data:
+            return {"security_session": None, "findings": []}
+
+        session_row = sess_res.data[0]
+        if user and session_row.get("user_id") and session_row.get("user_id") != user["id"]:
+            return JSONResponse(status_code=403, content={"error": "Not authorised", "security_session": None, "findings": []})
+
+        findings_res = (
+            client.table("security_findings")
+            .select("id,page_id,url,category,title,description,severity,confidence,recommendation,evidence_json,created_at")
+            .eq("security_session_id", session_row["id"])
+            .order("created_at")
+            .execute()
+        )
+        return {"security_session": session_row, "findings": findings_res.data or []}
+    except Exception as e:
+        return {"error": str(e), "security_session": None, "findings": []}
 
 
 # ---------------------------------------------------------------------------

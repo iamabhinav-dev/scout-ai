@@ -12,6 +12,7 @@ import CrawlProgressBar from "@/components/nonprimitive/CrawlProgressBar";
 import LiveScreenshotPanel from "@/components/nonprimitive/LiveScreenshotPanel";
 import CrawlLiveFeed from "@/components/nonprimitive/CrawlLiveFeed";
 import SiteAuditResults from "@/components/nonprimitive/SiteAuditResults";
+import SecurityAuditResults from "@/components/nonprimitive/SecurityAuditResults";
 
 // CrawlNodeGraph uses react-force-graph-2d which requires window/canvas — SSR off
 const CrawlNodeGraph = dynamic(
@@ -64,6 +65,7 @@ export default function CrawlerDashboard() {
     currentAuditUrl,
     auditProgress,
     auditError,
+    siteSecurityReport,
   } = useSiteAuditStream(urlsToAudit, sessionId, auditEnabled, accessToken, existingSessionId);
 
   const running = crawlStatus === "running";
@@ -178,6 +180,7 @@ export default function CrawlerDashboard() {
       {auditEnabled && (
         <div ref={auditSectionRef} className="min-h-screen">
           <SiteAuditResults pageAudits={pageAudits} auditStatus={auditStatus} />
+          <SecurityAuditResults siteReport={siteSecurityReport} pageAudits={pageAudits} auditStatus={auditStatus} />
         </div>
       )}
 

@@ -124,6 +124,7 @@ export default function SiteAuditResults({ pageAudits, auditStatus }: Props) {
               const uxScore   = extractScore(page.uxReport,         "overall_score");
               const seoScore  = extractScore(page.seoReport,        "overall_score");
               const riskScore = extractScore(page.complianceReport, "overall_risk_score");
+              const pageSecIssueCount = page.pageSecurityFindings?.length ?? 0;
 
               const rowBg =
                 isError    ? "bg-red-500/5 hover:bg-red-500/8" :
@@ -143,6 +144,11 @@ export default function SiteAuditResults({ pageAudits, auditStatus }: Props) {
                       <span className="font-mono text-xs text-zinc-300 truncate max-w-xs" title={page.url}>
                         {path}
                       </span>
+                      {pageSecIssueCount > 0 && isDone && (
+                        <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+                          {pageSecIssueCount} sec issue{pageSecIssueCount > 1 ? "s" : ""}
+                        </span>
+                      )}
                       {isError && page.error && (
                         <span className="truncate text-xs text-red-400 max-w-52" title={page.error}>
                           — {page.error}
