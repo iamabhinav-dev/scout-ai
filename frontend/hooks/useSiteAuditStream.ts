@@ -102,9 +102,13 @@ export function useSiteAuditStream(
         const data = JSON.parse(cached) as {
           pageAudits: [string, PageAuditResult][];
           progress:   { completed: number; total: number };
+          siteSecurityReport?: SiteSecurityReport | null;
         };
         setPageAudits(new Map(data.pageAudits));
         setAuditProgress(data.progress);
+        if (data.siteSecurityReport) {
+          setSiteSecurityReport(data.siteSecurityReport);
+        }
         setAuditStatus("complete");
         setCurrentAuditUrl(null);
         setAuditError(null);
@@ -328,13 +332,14 @@ export function useSiteAuditStream(
       sessionStorage.setItem(
         `scout_site_audit_v1_${sid}`,
         JSON.stringify({
-          pageAudits: [...pageAudits.entries()],
-          progress:   auditProgress,
+          pageAudits:         [...pageAudits.entries()],
+          progress:           auditProgress,
+          siteSecurityReport: siteSecurityReport ?? null,
         }),
       );
     } catch { /* quota exceeded — ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auditStatus]);
+  }, [auditStatus, siteSecurityReport]);
 
   return { auditStatus, pageAudits, currentAuditUrl, auditProgress, auditError, siteSecurityReport };
 }

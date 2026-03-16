@@ -96,10 +96,11 @@ export default function SiteAuditResults({ pageAudits, auditStatus }: Props) {
 
       {/* ── Table ── */}
       {entries.length > 0 && (
-      <div className="overflow-hidden rounded-xl border border-white/10">
+      <div className="rounded-xl border border-white/10 overflow-hidden">
+        <div className="max-h-96 overflow-auto">
         <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-white/10 bg-zinc-900/80">
+          <thead className="sticky top-0 z-10">
+            <tr className="border-b border-white/10 bg-zinc-900">
               <th className="w-10 py-2.5 pl-4 pr-2 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">#</th>
               <th className="py-2.5 pr-4 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">Page</th>
               <th className="w-16 py-2.5 pr-4 text-center text-xs font-medium uppercase tracking-wider text-zinc-500">UI</th>
@@ -212,6 +213,7 @@ export default function SiteAuditResults({ pageAudits, auditStatus }: Props) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
       )}
     </section>
