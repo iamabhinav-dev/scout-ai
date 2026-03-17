@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,106 +78,6 @@ function ChevronIcon({ open }: { open: boolean }) {
     >
       <polyline points="6 9 12 15 18 9" />
     </svg>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Phase card
-// ---------------------------------------------------------------------------
-
-function PhaseCard({ phase }: { phase: PhasePrompt }) {
-  const [open, setOpen]       = useState(false);
-  const [copied, setCopied]   = useState(false);
-  const colors                = getColors(phase.phase);
-
-  function handleCopy() {
-    navigator.clipboard.writeText(phase.prompt).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }
-
-  function handleDownload() {
-    const blob = new Blob([phase.prompt], { type: "text/markdown;charset=utf-8" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `phase-${phase.phase}-${phase.title.toLowerCase().replace(/\s+/g, "-")}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  return (
-    <div
-      className={`rounded-xl border bg-zinc-900/50 overflow-hidden transition-colors ${colors.ring} ${open ? "" : "hover:bg-zinc-900/70"}`}
-    >
-      {/* Header row — always visible */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
-      >
-        {/* Phase dot */}
-        <span
-          className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold"
-          style={{ background: `${colors.dot}20`, color: colors.dot, border: `1px solid ${colors.dot}40` }}
-        >
-          {phase.phase}
-        </span>
-
-        {/* Title */}
-        <span className="flex-1 text-sm font-medium text-zinc-100">
-          Phase {phase.phase} — {phase.title}
-        </span>
-
-        {/* Issue count badge */}
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${colors.badge}`}>
-          {phase.issue_count} issue{phase.issue_count !== 1 ? "s" : ""}
-        </span>
-
-        <span className="shrink-0 text-zinc-500">
-          <ChevronIcon open={open} />
-        </span>
-      </button>
-
-      {/* Expanded content */}
-      {open && (
-        <div className="border-t border-white/5">
-          {/* Prompt text */}
-          <pre
-            className="px-4 py-4 text-xs leading-relaxed text-zinc-300 font-mono whitespace-pre-wrap overflow-x-auto"
-            style={{ background: "rgba(0,0,0,0.3)" }}
-          >
-            {phase.prompt}
-          </pre>
-
-          {/* Action buttons */}
-          <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-white/5">
-            <button
-              type="button"
-              onClick={handleDownload}
-              className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
-            >
-              <DownloadIcon />
-              Download
-            </button>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors"
-              style={
-                copied
-                  ? { background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)" }
-                  : { background: `${colors.dot}18`, color: colors.dot, border: `1px solid ${colors.dot}30` }
-              }
-            >
-              {copied ? <CheckIcon /> : <CopyIcon />}
-              {copied ? "Copied!" : "Copy Prompt"}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -286,12 +187,41 @@ function ExpandablePhaseCard({ phase, forceOpen }: { phase: PhasePrompt; forceOp
 
       {open && (
         <div className="border-t border-white/5">
-          <pre
-            className="px-4 py-4 text-xs leading-relaxed text-zinc-300 font-mono whitespace-pre-wrap overflow-x-auto"
+          <div
+            className="px-5 py-4 text-xs leading-relaxed overflow-x-auto"
             style={{ background: "rgba(0,0,0,0.3)" }}
           >
-            {phase.prompt}
-          </pre>
+            <ReactMarkdown
+              components={{
+                h2: ({ children }) => (
+                  <h2 className="mt-4 mb-2 text-sm font-semibold text-zinc-100 border-b border-white/10 pb-1 first:mt-0">{children}</h2>
+                ),
+                h3: ({ children }) => (
+                  <h3 className="mt-3 mb-1.5 text-xs font-semibold text-zinc-300 uppercase tracking-wide">{children}</h3>
+                ),
+                p: ({ children }) => (
+                  <p className="mb-2 text-zinc-400">{children}</p>
+                ),
+                ul: ({ children }) => (
+                  <ul className="mb-2 space-y-1 pl-0 list-none">{children}</ul>
+                ),
+                li: ({ children }) => (
+                  <li className="flex gap-2 text-zinc-300">
+                    <span className="mt-0.5 shrink-0" style={{ color: colors.dot }}>▸</span>
+                    <span>{children}</span>
+                  </li>
+                ),
+                code: ({ children }) => (
+                  <code className="rounded px-1 py-0.5 text-[11px] font-mono" style={{ background: "rgba(255,255,255,0.07)", color: colors.dot }}>{children}</code>
+                ),
+                strong: ({ children }) => (
+                  <strong className="font-semibold text-zinc-200">{children}</strong>
+                ),
+              }}
+            >
+              {phase.prompt}
+            </ReactMarkdown>
+          </div>
           <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-white/5">
             <button
               type="button"

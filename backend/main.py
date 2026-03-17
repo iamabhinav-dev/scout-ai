@@ -959,6 +959,7 @@ async def audit_site(
         phased_prompts = generate_phased_prompts(
             pages=[
                 {
+                    "url":                ev.get("url", ""),
                     "ui_report":          ev.get("ui_report"),
                     "ux_report":          ev.get("ux_report"),
                     "seo_report":         ev.get("seo_report"),

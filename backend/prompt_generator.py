@@ -45,27 +45,51 @@ def _deduplicate(items: list[str]) -> list[str]:
     return result
 
 
-def _count_and_deduplicate(items: list[str], total_pages: int) -> list[str]:
+def _fmt_url_short(url: str) -> str:
+    """Return just the path+query of a URL for readable annotations."""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        path = p.path or "/"
+        return path if len(path) <= 50 else path[:47] + "…"
+    except Exception:
+        return url
+
+
+def _count_and_deduplicate(
+    items: list[tuple[str, str]],  # (issue_text, page_url)
+    total_pages: int,
+) -> list[str]:
     """
-    Deduplicate across pages and annotate with 'Affects N pages' when
-    the same issue recurs on multiple pages.
+    Deduplicate across pages and annotate:
+    - Appears on exactly 1 page  → [Only on: /path]
+    - Appears on 2…N-1 pages    → [Affects N/M pages]
+    - Appears on ALL pages       → no annotation (site-wide)
     """
     counts: Counter[str] = Counter()
     canonical: dict[str, str] = {}
+    first_url: dict[str, str] = {}
 
-    for item in items:
-        norm = item.strip().lower()
+    for text, url in items:
+        norm = text.strip().lower()
         if not norm:
             continue
         counts[norm] += 1
         if norm not in canonical:
-            canonical[norm] = item.strip()
+            canonical[norm] = text.strip()
+        if norm not in first_url:
+            first_url[norm] = url
 
     result: list[str] = []
     for norm, count in counts.most_common():
         text = canonical[norm]
-        if count > 1:
+        if count == 1:
+            path = _fmt_url_short(first_url.get(norm, ""))
+            if path and path != "/":
+                text = f"{text}  [Only on: {path}]"
+        elif count < total_pages:
             text = f"{text}  [Affects {count}/{total_pages} pages]"
+        # count == total_pages → site-wide, no annotation
         result.append(text)
     return result
 
@@ -295,10 +319,11 @@ def _aggregate_report_lists(
     Returns {field_path: [item_with_frequency_annotation, ...]}
     """
     from collections import defaultdict
-    item_pages: dict[str, dict[str, int]] = defaultdict(Counter)  # field -> norm -> count
+    # field_path -> list of (text, url) tuples
+    field_items: dict[str, list[tuple[str, str]]] = defaultdict(list)
 
-    total = len(pages)
     for p in pages:
+        url = p.get("url", "")
         report = p.get(report_key_camel) or p.get(report_key_snake) or {}
         if not isinstance(report, dict) or report.get("error"):
             continue
@@ -313,40 +338,12 @@ def _aggregate_report_lists(
             if isinstance(val, list):
                 for item in val:
                     if isinstance(item, str) and item.strip():
-                        norm = item.strip().lower()
-                        item_pages[path][norm] += 1
+                        field_items[path].append((item.strip(), url))
 
-    # Build annotated lists
+    total = len(pages)
     result: dict[str, list[str]] = {}
-    # We need canonical text too — re-scan for it
-    canonical: dict[str, dict[str, str]] = defaultdict(dict)
-    for p in pages:
-        report = p.get(report_key_camel) or p.get(report_key_snake) or {}
-        if not isinstance(report, dict):
-            continue
-        for path in list_field_paths:
-            parts = path.split(".")
-            val: Any = report
-            for part in parts:
-                if not isinstance(val, dict):
-                    val = None
-                    break
-                val = val.get(part)
-            if isinstance(val, list):
-                for item in val:
-                    if isinstance(item, str) and item.strip():
-                        norm = item.strip().lower()
-                        if norm not in canonical[path]:
-                            canonical[path][norm] = item.strip()
-
-    for path, counts in item_pages.items():
-        annotated: list[str] = []
-        for norm, count in counts.most_common(MAX_ITEMS_PER_PHASE):
-            text = canonical[path].get(norm, norm)
-            if count > 1:
-                text = f"{text}  [Affects {count}/{total} pages]"
-            annotated.append(text)
-        result[path] = annotated
+    for path, tuples in field_items.items():
+        result[path] = _count_and_deduplicate(tuples, total)[:MAX_ITEMS_PER_PHASE]
 
     return result
 
@@ -354,11 +351,12 @@ def _aggregate_report_lists(
 def _aggregate_compliance_categories(pages: list[dict], total: int) -> dict:
     """Aggregate compliance category findings (string fields, not lists)."""
     from collections import defaultdict
-    cat_findings: dict[str, Counter] = defaultdict(Counter)
-
     CAT_KEYS = ["data_privacy", "legal_transparency", "accessibility_compliance"]
+    # key -> list of (text, url) tuples
+    cat_items: dict[str, list[tuple[str, str]]] = defaultdict(list)
 
     for p in pages:
+        url = p.get("url", "")
         report = p.get("complianceReport") or p.get("compliance_report") or {}
         if not isinstance(report, dict) or report.get("error"):
             continue
@@ -368,35 +366,11 @@ def _aggregate_compliance_categories(pages: list[dict], total: int) -> dict:
                 findings = cat.get("findings", "")
                 risk = cat.get("risk_level", "Low")
                 if findings and risk.lower() != "low":
-                    norm = findings.strip().lower()
-                    cat_findings[key][norm] += 1
+                    cat_items[key].append((findings.strip(), url))
 
     result: dict[str, list[str]] = {}
-    canonical: dict[str, dict[str, str]] = {}
-
-    for p in pages:
-        report = p.get("complianceReport") or p.get("compliance_report") or {}
-        if not isinstance(report, dict):
-            continue
-        for key in CAT_KEYS:
-            cat = report.get(key, {})
-            if isinstance(cat, dict):
-                findings = cat.get("findings", "")
-                if findings.strip():
-                    norm = findings.strip().lower()
-                    if key not in canonical:
-                        canonical[key] = {}
-                    if norm not in canonical[key]:
-                        canonical[key][norm] = findings.strip()
-
-    for key, counts in cat_findings.items():
-        items: list[str] = []
-        for norm, count in counts.most_common(5):
-            text = (canonical.get(key) or {}).get(norm, norm)
-            if count > 1:
-                text = f"{text}  [Affects {count}/{total} pages]"
-            items.append(text)
-        result[key] = items
+    for key, tuples in cat_items.items():
+        result[key] = _count_and_deduplicate(tuples, total)[:5]
 
     return result
 
@@ -412,8 +386,9 @@ def _generate_multi_page(pages: list[dict], site_url: str) -> list[dict]:
     p1_sections: list[tuple[str, list[str]]] = []
 
     # Security critical/high across all pages
-    sec_critical: list[str] = []
+    sec_critical: list[tuple[str, str]] = []
     for p in pages:
+        url = p.get("url", "")
         for report_key in ("security_report", "securityReport"):
             sr = p.get(report_key)
             if isinstance(sr, dict):
@@ -421,39 +396,44 @@ def _generate_multi_page(pages: list[dict], site_url: str) -> list[dict]:
                     if isinstance(f, dict) and f.get("severity", "").lower() in ("critical", "high"):
                         rec = f.get("recommendation") or f.get("title", "")
                         if rec:
-                            sec_critical.append(rec)
+                            sec_critical.append((rec, url))
         for f in (p.get("page_security_findings") or p.get("pageSecurityFindings") or []):
             if isinstance(f, dict) and f.get("severity", "").lower() in ("critical", "high"):
                 rec = f.get("recommendation") or f.get("title", "")
                 if rec:
-                    sec_critical.append(rec)
+                    sec_critical.append((rec, url))
     if sec_critical:
         p1_sections.append(("Security — Critical / High", _count_and_deduplicate(sec_critical, total)))
 
     # Compliance critical violations across pages
-    comp_crit_all: list[str] = []
+    comp_crit_all: list[tuple[str, str]] = []
     for p in pages:
+        url = p.get("url", "")
         r = p.get("complianceReport") or p.get("compliance_report") or {}
         if isinstance(r, dict):
-            comp_crit_all.extend(v for v in r.get("critical_violations", []) if v)
+            for v in r.get("critical_violations", []):
+                if v:
+                    comp_crit_all.append((v, url))
     if comp_crit_all:
         p1_sections.append(("Compliance — Critical Violations", _count_and_deduplicate(comp_crit_all, total)))
 
     # SEO hard failures
-    seo_fails_all: list[str] = []
+    seo_fails_all: list[tuple[str, str]] = []
     for p in pages:
+        url = p.get("url", "")
         r = p.get("seoReport") or p.get("seo_report") or {}
         if isinstance(r, dict):
             for _key, factor in (r.get("universal_factors") or {}).items():
                 if isinstance(factor, dict) and factor.get("status") == "fail":
-                    seo_fails_all.append(factor.get("note", _key))
+                    seo_fails_all.append((factor.get("note", _key), url))
     if seo_fails_all:
         p1_sections.append(("SEO — Hard Failures", _count_and_deduplicate(seo_fails_all, total)))
 
     # ── Phase 2: Security ─────────────────────────────────────────────────
     p2_sections: list[tuple[str, list[str]]] = []
-    all_sec: list[str] = []
+    all_sec: list[tuple[str, str]] = []
     for p in pages:
+        url = p.get("url", "")
         for report_key in ("security_report", "securityReport"):
             sr = p.get(report_key)
             if isinstance(sr, dict):
@@ -461,12 +441,12 @@ def _generate_multi_page(pages: list[dict], site_url: str) -> list[dict]:
                     if isinstance(f, dict):
                         rec = f.get("recommendation") or f.get("title", "")
                         if rec:
-                            all_sec.append(rec)
+                            all_sec.append((rec, url))
         for f in (p.get("page_security_findings") or p.get("pageSecurityFindings") or []):
             if isinstance(f, dict):
                 rec = f.get("recommendation") or f.get("title", "")
                 if rec:
-                    all_sec.append(rec)
+                    all_sec.append((rec, url))
     if all_sec:
         p2_sections.append(("Security Findings", _count_and_deduplicate(all_sec, total)))
 
@@ -484,6 +464,7 @@ def _generate_multi_page(pages: list[dict], site_url: str) -> list[dict]:
     # critical violations (deduplicated already in phase 1 but also here for completeness)
     if comp_crit_all:
         p3_sections.append(("Critical Violations", _count_and_deduplicate(comp_crit_all, total)))
+
 
     # ── Phase 4: SEO ───────────────────────────────────────────────────────
     p4_agg = _aggregate_report_lists(pages, "seoReport", "seo_report", "recommendations")
