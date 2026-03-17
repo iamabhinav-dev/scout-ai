@@ -83,6 +83,7 @@ type SseResultEvent    = {
   ux_report?: UxReport;
   compliance_report?: ComplianceReport;
   seo_report?: SeoReport;
+  screenshot_base64?: string | null;
 };
 type SseErrorEvent     = { type: "error"; message: string };
 
@@ -104,6 +105,7 @@ export interface AuditStreamResult {
   uxReport: UxReport | null;
   complianceReport: ComplianceReport | null;
   seoReport: SeoReport | null;
+  screenshotUrl: string | null;
   isLoading: boolean;
   /** Final `type: "result"` received */
   isDone: boolean;
@@ -121,6 +123,7 @@ export function useAuditStream(targetUrl: string, accessToken?: string | null): 
   const [uxReport, setUxReport]   = useState<UxReport | null>(null);
   const [complianceReport, setComplianceReport] = useState<ComplianceReport | null>(null);
   const [seoReport, setSeoReport] = useState<SeoReport | null>(null);
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDone, setIsDone]       = useState(false);
   const [error, setError]         = useState<string | null>(null);
@@ -138,11 +141,13 @@ export function useAuditStream(targetUrl: string, accessToken?: string | null): 
           uxReport?: UxReport;
           complianceReport?: ComplianceReport;
           seoReport?: SeoReport;
+          screenshotUrl?: string;
         };
         setUiReport(data.uiReport ?? null);
         setUxReport(data.uxReport ?? null);
         setComplianceReport(data.complianceReport ?? null);
         setSeoReport(data.seoReport ?? null);
+        setScreenshotUrl(data.screenshotUrl ?? null);
         setIsLoading(false);
         setIsDone(true);
         setError(null);
@@ -155,6 +160,7 @@ export function useAuditStream(targetUrl: string, accessToken?: string | null): 
     setUxReport(null);
     setComplianceReport(null);
     setSeoReport(null);
+    setScreenshotUrl(null);
     setIsLoading(false);
     setIsDone(false);
     setError(null);
@@ -252,6 +258,7 @@ export function useAuditStream(targetUrl: string, accessToken?: string | null): 
           if (event.ux_report) setUxReport(event.ux_report);
           if (event.compliance_report) setComplianceReport(event.compliance_report);
           if (event.seo_report) setSeoReport(event.seo_report);
+          if (event.screenshot_base64) setScreenshotUrl(`data:image/png;base64,${event.screenshot_base64}`);
           setIsLoading(false);
           setIsDone(true);
           break;
@@ -270,5 +277,5 @@ export function useAuditStream(targetUrl: string, accessToken?: string | null): 
     };
   }, [targetUrl]);
 
-  return { uiReport, uxReport, complianceReport, seoReport, isLoading, isDone, error };
+  return { uiReport, uxReport, complianceReport, seoReport, screenshotUrl, isLoading, isDone, error };
 }

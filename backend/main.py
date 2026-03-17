@@ -243,12 +243,14 @@ def _run_graph(url: str) -> dict:
     compliance_report = None
     seo_report = None
     security_report = None
+    screenshot_base64 = None
     for event in scout_graph.stream({"target_url": url}, stream_mode="updates"):
         for node_name, update in event.items():
             if node_name == "scrape":
                 ctx = update.get("page_context", {})
                 if ctx.get("error"):
                     return {"error": ctx["error"]}
+                screenshot_base64 = ctx.get("screenshot_base64")
             elif node_name == "ui_auditor":
                 ui_report = update.get("ui_report")
             elif node_name == "ux_auditor":
@@ -265,6 +267,7 @@ def _run_graph(url: str) -> dict:
         "compliance_report": compliance_report,
         "seo_report": seo_report,
         "security_report": security_report,
+        "screenshot_base64": screenshot_base64,
     }
 
 
@@ -317,6 +320,7 @@ async def _stream_audit(url: str):
             "compliance_report": result["compliance_report"],
             "seo_report": result["seo_report"],
             "security_report": result["security_report"],
+            "screenshot_base64": result.get("screenshot_base64"),
         })
 
     except Exception as exc:
@@ -479,7 +483,7 @@ async def get_crawl_pages(session_id: str, limit: int = 100, offset: int = 0):
     try:
         res = (
             client.table("crawled_pages")
-            .select("id,url,url_pattern,is_template_representative,status_code,page_title,depth,screenshot_b64")
+            .select("id,url,url_pattern,is_template_representative,status_code,page_title,depth,screenshot_url")
             .eq("session_id", session_id)
             .range(offset, offset + limit - 1)
             .execute()
@@ -582,16 +586,35 @@ async def get_crawl_audit_session(session_id: str):
         if not audit_res.data:
             return {"audit_session": None, "pages": []}
         audit_session = audit_res.data[0]
-        # Get page audit results
+        # Get page audit results, with crawled_pages screenshot as fallback
         pages_res = (
             client.table("page_audits")
-            .select("id,url,ui_report,ux_report,compliance_report,seo_report,overall_score,created_at")
+            .select("id,url,ui_report,ux_report,compliance_report,seo_report,overall_score,screenshot_url,created_at")
             .eq("audit_session_id", audit_session["id"])
             .order("created_at")
             .execute()
         )
 
         pages = pages_res.data or []
+
+        # For any page missing a screenshot in page_audits, fall back to
+        # the screenshot captured by the BFS crawler in crawled_pages.
+        missing_urls = [p["url"] for p in pages if not p.get("screenshot_url")]
+        if missing_urls:
+            try:
+                crawl_res = (
+                    client.table("crawled_pages")
+                    .select("url,screenshot_url")
+                    .eq("session_id", session_id)
+                    .in_("url", missing_urls)
+                    .execute()
+                )
+                crawl_shots = {r["url"]: r["screenshot_url"] for r in (crawl_res.data or []) if r.get("screenshot_url")}
+                for p in pages:
+                    if not p.get("screenshot_url") and p["url"] in crawl_shots:
+                        p["screenshot_url"] = crawl_shots[p["url"]]
+            except Exception as _e:
+                log.debug("[audit/restore] crawled_pages screenshot fallback failed: %s", _e)
 
         # Enrich with security findings split by scope
         sec_session_res = (
@@ -809,16 +832,17 @@ async def audit_site(
                             page_scores.append(page_score)
 
                         # Persist to Supabase (no-op when not configured)
+                        page_ctx = result.get("page_context") or {}
                         await asyncio.to_thread(
                             save_page_audit,
                             audit_session_id, url,
                             result["ui_report"], result["ux_report"],
                             result["compliance_report"], result["seo_report"],
                             page_score,
+                            page_ctx.get("screenshot_base64"),
                         )
 
                         # ── Per-page content security (no HTTP fetch) ──
-                        page_ctx = result.get("page_context") or {}
                         page_sec_findings: list = []
                         try:
                             sec_result = await asyncio.to_thread(
@@ -875,6 +899,7 @@ async def audit_site(
                             "seo_report":        result["seo_report"],
                             "compliance_report": result["compliance_report"],
                             "audit_session_id":  audit_session_id,
+                            "screenshot_base64": (result.get("page_context") or {}).get("screenshot_base64"),
                         }
                         if page_sec_findings:
                             ev["page_security_findings"] = page_sec_findings
@@ -945,6 +970,60 @@ async def audit_site(
     )
 
 
+# ---------------------------------------------------------------------------
+# 7b. Projects list  (for the dashboard)
+# ---------------------------------------------------------------------------
+
+@app.get("/projects")
+async def list_projects(
+    user: dict | None = Depends(get_current_user_optional),
+):
+    """Return all audit sessions for the authenticated user, newest first.
+
+    Uses the service key so it always works regardless of RLS / view permissions.
+    Falls back to an empty list when Supabase is not configured or user is anonymous.
+    """
+    from crawler.db import _get_client
+    client = _get_client()
+    if not client:
+        return {"projects": []}
+
+    user_id = user["sub"] if user else None
+    if not user_id:
+        return {"projects": []}
+
+    try:
+        # Fetch audit sessions for this user
+        sessions_res = (
+            client.table("audit_sessions")
+            .select("id,root_url,status,overall_score,started_at,completed_at,crawl_session_id")
+            .eq("user_id", user_id)
+            .order("started_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        sessions = sessions_res.data or []
+
+        # Attach page counts in one additional query
+        if sessions:
+            session_ids = [s["id"] for s in sessions]
+            counts_res = (
+                client.table("page_audits")
+                .select("audit_session_id")
+                .in_("audit_session_id", session_ids)
+                .execute()
+            )
+            from collections import Counter
+            page_counts: Counter = Counter(r["audit_session_id"] for r in (counts_res.data or []))
+            for s in sessions:
+                s["page_count"] = page_counts.get(s["id"], 0)
+                s["audit_session_id"] = s.pop("id")  # rename to match dashboard type
+        return {"projects": sessions}
+    except Exception as e:
+        log.warning("[projects] list_projects error: %s", e)
+        return {"projects": [], "error": str(e)}
+
+
 @app.get("/audit/session/{audit_session_id}/pages")
 async def get_audit_session_pages(
     audit_session_id: str,
@@ -958,7 +1037,7 @@ async def get_audit_session_pages(
     try:
         res = (
             client.table("page_audits")
-            .select("id,url,ui_report,ux_report,compliance_report,seo_report,overall_score,created_at")
+            .select("id,url,ui_report,ux_report,compliance_report,seo_report,overall_score,screenshot_url,created_at")
             .eq("audit_session_id", audit_session_id)
             .order("created_at")
             .execute()

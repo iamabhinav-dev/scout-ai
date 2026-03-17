@@ -196,6 +196,7 @@ export default function SiteAuditResults({ pageAudits, auditStatus }: Props) {
                                 uxReport:         page.uxReport,
                                 seoReport:        page.seoReport,
                                 complianceReport: page.complianceReport,
+                                screenshotUrl: page.screenshotUrl,
                               }),
                             );
                           } catch { /* sessionStorage quota — ignore */ }

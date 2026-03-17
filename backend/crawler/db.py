@@ -9,6 +9,7 @@ and a single warning is logged.  This lets the crawler run locally without a
 Supabase project configured (Phase 1 dev mode).
 """
 
+import base64
 import logging
 import os
 import time
@@ -91,6 +92,73 @@ def _get_client():
 
 
 # ---------------------------------------------------------------------------
+# Supabase Storage helpers  (screenshots → bucket instead of TEXT column)
+# ---------------------------------------------------------------------------
+
+_SCREENSHOT_BUCKET = "screenshots"
+_bucket_ensured = False
+
+
+def _ensure_bucket() -> bool:
+    """Create the screenshots bucket if it doesn't exist yet. Returns True on success."""
+    global _bucket_ensured
+    if _bucket_ensured:
+        return True
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.storage.get_bucket(_SCREENSHOT_BUCKET)
+        _bucket_ensured = True
+        return True
+    except Exception:
+        try:
+            client.storage.create_bucket(
+                _SCREENSHOT_BUCKET,
+                options={"public": True},
+            )
+            _bucket_ensured = True
+            log.info("[db] Created storage bucket '%s'", _SCREENSHOT_BUCKET)
+            return True
+        except Exception as e:
+            # Bucket might already exist (race / previous run)
+            if "already exists" in str(e).lower() or "Duplicate" in str(e):
+                _bucket_ensured = True
+                return True
+            log.warning("[db] Failed to create storage bucket: %s", e)
+            return False
+
+
+def upload_screenshot(path: str, screenshot_b64: str) -> Optional[str]:
+    """Upload a base64-encoded screenshot to Supabase Storage.
+
+    Args:
+        path: storage object path, e.g. "crawl/{session_id}/{page_id}.jpg"
+        screenshot_b64: base64-encoded image bytes
+
+    Returns:
+        The public URL of the uploaded file, or None on failure.
+    """
+    client = _get_client()
+    if not client or not screenshot_b64:
+        return None
+    if not _ensure_bucket():
+        return None
+    try:
+        image_bytes = base64.b64decode(screenshot_b64)
+        client.storage.from_(_SCREENSHOT_BUCKET).upload(
+            path,
+            image_bytes,
+            file_options={"content-type": "image/jpeg", "upsert": "true"},
+        )
+        url = client.storage.from_(_SCREENSHOT_BUCKET).get_public_url(path)
+        return url
+    except Exception as e:
+        log.warning("[db] upload_screenshot %s: %s", path, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Session helpers
 # ---------------------------------------------------------------------------
 
@@ -111,6 +179,14 @@ def create_session(root_url: str, config: dict, user_id: Optional[str] = None) -
             client.table("crawl_sessions").insert(row).execute()
         except Exception as e:
             log.warning("[db] create_session: %s", e)
+            # If FK violation (e.g. user_id not in profiles), retry without user_id
+            if user_id and _is_fk_violation(e):
+                log.warning("[db] create_session FK fallback: retrying without user_id")
+                try:
+                    row.pop("user_id", None)
+                    client.table("crawl_sessions").insert(row).execute()
+                except Exception as e2:
+                    log.warning("[db] create_session FK fallback failed: %s", e2)
     return session_id
 
 
@@ -174,8 +250,13 @@ def insert_page(
                 "dom_hash": dom_hash,
                 "depth": depth,
             }
+            # Upload screenshot to Supabase Storage, store URL in DB
             if screenshot_b64:
-                row["screenshot_b64"] = screenshot_b64
+                ss_url = upload_screenshot(
+                    f"crawl/{session_id}/{page_id}.jpg", screenshot_b64,
+                )
+                if ss_url:
+                    row["screenshot_url"] = ss_url
             _run_with_retry(lambda: client.table("crawled_pages").insert(row).execute(), "insert_page")
         except Exception as e:
             log.warning("[db] insert_page: %s", e)
@@ -183,16 +264,20 @@ def insert_page(
     return page_id
 
 
-def update_page_screenshot(page_id: str, screenshot_b64: str) -> None:
-    """Attach a screenshot to an already-inserted crawled_pages row."""
+def update_page_screenshot(page_id: str, screenshot_b64: str, session_id: str = "") -> None:
+    """Upload screenshot to storage and update the crawled_pages row with the URL."""
     client = _get_client()
-    if client:
-        try:
-            client.table("crawled_pages").update(
-                {"screenshot_b64": screenshot_b64}
-            ).eq("id", page_id).execute()
-        except Exception as e:
-            log.warning("[db] update_page_screenshot: %s", e)
+    if client and screenshot_b64:
+        ss_url = upload_screenshot(
+            f"crawl/{session_id or 'unknown'}/{page_id}.jpg", screenshot_b64,
+        )
+        if ss_url:
+            try:
+                client.table("crawled_pages").update(
+                    {"screenshot_url": ss_url}
+                ).eq("id", page_id).execute()
+            except Exception as e:
+                log.warning("[db] update_page_screenshot: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +435,22 @@ def create_audit_session(
             client.table("audit_sessions").insert(row).execute()
         except Exception as e:
             log.warning("[db] create_audit_session: %s", e)
+            # FK on crawl_session_id or user_id → profiles: retry stripping offending fields
+            if _is_fk_violation(e):
+                for drop_keys in (
+                    ["crawl_session_id", "user_id"],
+                    ["crawl_session_id"],
+                    ["user_id"],
+                ):
+                    retried_row = {k: v for k, v in row.items() if k not in drop_keys}
+                    try:
+                        client.table("audit_sessions").insert(retried_row).execute()
+                        log.warning("[db] create_audit_session FK fallback succeeded (dropped %s)", drop_keys)
+                        break
+                    except Exception as e2:
+                        if not _is_fk_violation(e2):
+                            log.warning("[db] create_audit_session FK fallback: %s", e2)
+                            break
     return audit_session_id
 
 
@@ -361,13 +462,15 @@ def save_page_audit(
     compliance_report: Optional[dict],
     seo_report: Optional[dict],
     overall_score: Optional[float],
+    screenshot_b64: Optional[str] = None,
 ) -> None:
     """Insert a page_audits row."""
     client = _get_client()
     if client:
         try:
-            client.table("page_audits").insert({
-                "id":                str(uuid.uuid4()),
+            page_audit_id = str(uuid.uuid4())
+            row: dict = {
+                "id":                page_audit_id,
                 "audit_session_id":  audit_session_id,
                 "url":               url,
                 "ui_report":         ui_report,
@@ -375,7 +478,15 @@ def save_page_audit(
                 "compliance_report": compliance_report,
                 "seo_report":        seo_report,
                 "overall_score":     overall_score,
-            }).execute()
+            }
+            # Upload screenshot to storage, store URL in DB
+            if screenshot_b64:
+                ss_url = upload_screenshot(
+                    f"audit/{audit_session_id}/{page_audit_id}.jpg", screenshot_b64,
+                )
+                if ss_url:
+                    row["screenshot_url"] = ss_url
+            client.table("page_audits").insert(row).execute()
         except Exception as e:
             log.warning("[db] save_page_audit: %s", e)
 

@@ -204,7 +204,7 @@ export function useCrawlStream(
           // Map DB pages → CrawledPage + collect screenshots
           const pageMap = new Map<string, CrawledPage>();
           const screenshotMap = new Map<string, string>();
-          for (const p of (pagesData.pages ?? []) as { url: string; url_pattern: string | null; is_template_representative: boolean; status_code: number | null; depth: number; screenshot_b64?: string | null }[]) {
+          for (const p of (pagesData.pages ?? []) as { url: string; url_pattern: string | null; is_template_representative: boolean; status_code: number | null; depth: number; screenshot_url?: string | null }[]) {
             pageMap.set(p.url, {
               url: p.url,
               urlPattern: p.url_pattern ?? null,
@@ -215,8 +215,8 @@ export function useCrawlStream(
               linksFound: 0,
               brokenLinksFound: 0,
             });
-            if (p.screenshot_b64) {
-              screenshotMap.set(p.url, `data:image/jpeg;base64,${p.screenshot_b64}`);
+            if (p.screenshot_url) {
+              screenshotMap.set(p.url, p.screenshot_url);
             }
           }
 
@@ -237,8 +237,10 @@ export function useCrawlStream(
           }));
 
           // Map DB links → GraphLink[] for the force-directed graph
+          // Only include edges where both source and target are known pages,
+          // otherwise react-force-graph-2d errors on missing node ids.
           const gl: GraphLink[] = ((linksData.links ?? []) as { from_url: string; to_url: string; is_broken: boolean; is_internal: boolean }[])
-            .filter((l) => l.from_url && l.is_internal)
+            .filter((l) => l.from_url && l.is_internal && pageMap.has(l.from_url) && pageMap.has(l.to_url))
             .map((l) => ({
               source: l.from_url,
               target: l.to_url,

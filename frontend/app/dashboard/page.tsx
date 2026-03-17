@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { useSupabaseSession } from "@/hooks/useSupabaseSession";
 import NewProjectModal from "@/components/nonprimitive/NewProjectModal";
 
@@ -171,23 +170,45 @@ export default function DashboardPage() {
   const [modalOpen,  setModalOpen]  = useState(false);
   const [deleting,   setDeleting]   = useState<AuditSession | null>(null);
 
+  // Fetch projects from the backend API (uses service key — always correct user_id).
+  // Extracted into a ref so it can be called on mount AND when the tab regains focus.
+  const fetchAudits = useRef(() => {});
+  fetchAudits.current = () => {
+    if (loading || !session || !accessToken) return;
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+    fetch(`${backendUrl}/projects`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        setFetching(false);
+        if (data.error) { setFetchError(data.error); return; }
+        setAudits((data.projects as AuditSession[]) ?? []);
+      })
+      .catch((err) => {
+        setFetching(false);
+        setFetchError(err instanceof Error ? err.message : String(err));
+      });
+  };
+
   useEffect(() => {
     if (loading) return;
     if (!session) { router.replace("/login?redirect=/dashboard"); return; }
-
-    const supabase = createClient();
-    supabase
-      .from("user_audit_history")
-      .select("*")
-      .eq("user_id", session.user.id)
-      .order("started_at", { ascending: false })
-      .limit(50)
-      .then((res) => {
-        setFetching(false);
-        if (res.error) { setFetchError(res.error.message); return; }
-        setAudits((res.data as AuditSession[]) ?? []);
-      });
+    fetchAudits.current();
   }, [loading, session, router]);
+
+  // Re-fetch when the page becomes visible again (covers browser back-navigation).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") fetchAudits.current();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, []);
 
   const { signOut } = useSupabaseSession();
 

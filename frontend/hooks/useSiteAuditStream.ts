@@ -21,6 +21,7 @@ export interface PageAuditResult {
   complianceReport: Record<string, any> | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pageSecurityFindings: Array<Record<string, any>> | null;
+  screenshotUrl: string | null;
   error:            string | null;
   index:            number;
 }
@@ -143,6 +144,7 @@ export function useSiteAuditStream(
             seo_report: Record<string, unknown> | null;
             compliance_report: Record<string, unknown> | null;
             page_security_findings?: Array<Record<string, unknown>> | null;
+            screenshot_url?: string | null;
             overall_score: number | null;
           }[] ?? [];
 
@@ -162,6 +164,7 @@ export function useSiteAuditStream(
               seoReport: (p.seo_report as Record<string, unknown>) ?? null,
               complianceReport: (p.compliance_report as Record<string, unknown>) ?? null,
               pageSecurityFindings: (p.page_security_findings as Array<Record<string, unknown>>) ?? null,
+              screenshotUrl: p.screenshot_url ?? null,
               error: null,
               index: idx + 1,
             });
@@ -260,6 +263,7 @@ export function useSiteAuditStream(
             next.set(ev.url, {
               url: ev.url, status: "auditing",
               uiReport: null, uxReport: null, seoReport: null, complianceReport: null, pageSecurityFindings: null,
+              screenshotUrl: null,
               error: null, index: ev.index ?? 0,
             });
             return next;
@@ -277,6 +281,7 @@ export function useSiteAuditStream(
               seoReport:        ev.seo_report        ?? null,
               complianceReport: ev.compliance_report ?? null,
               pageSecurityFindings: ev.page_security_findings ?? null,
+              screenshotUrl: ev.screenshot_base64 ? `data:image/png;base64,${ev.screenshot_base64}` : null,
               error:            null,
               index:            ev.index ?? 0,
             });
@@ -291,6 +296,7 @@ export function useSiteAuditStream(
             next.set(ev.url, {
               url: ev.url, status: "error",
               uiReport: null, uxReport: null, seoReport: null, complianceReport: null, pageSecurityFindings: null,
+              screenshotUrl: null,
               error: ev.error ?? "Unknown error",
               index: ev.index ?? 0,
             });

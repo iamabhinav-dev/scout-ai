@@ -33,7 +33,13 @@ export default function CrawlerDashboard() {
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
 
   // ── Auth ─────────────────────────────────────────────────────────────────
-  const { accessToken } = useSupabaseSession();
+  const { accessToken, loading: sessionLoading } = useSupabaseSession();
+
+  // Delay the crawl/DB requests until the Supabase session has loaded.
+  // Without this, the first fetch fires with accessToken=null, the backend
+  // saves user_id=null in audit_sessions, and the dashboard never shows
+  // the project because the user_id filter returns 0 rows.
+  const crawlUrl = sessionLoading ? "" : targetUrl;
 
   // ── Phase 1: crawl ────────────────────────────────────────────────────────
   const {
@@ -48,7 +54,7 @@ export default function CrawlerDashboard() {
     graphLinks,
     error: crawlError,
     stop,
-  } = useCrawlStream(targetUrl, undefined, accessToken, existingSessionId);
+  } = useCrawlStream(crawlUrl, undefined, accessToken, existingSessionId);
 
   // All visited pages are candidates for audit (skipped/template-dup pages excluded)
   const urlsToAudit = useMemo(

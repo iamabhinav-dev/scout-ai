@@ -395,6 +395,7 @@ export default function AnalysisDashboard({ reports }: { reports?: PreloadedRepo
     uxReport:         streamedUx,
     complianceReport: streamedCompliance,
     seoReport:        streamedSeo,
+    screenshotUrl: streamedScreenshot,
     isDone:           streamedDone,
     error,
   } = useAuditStream(streamUrl, accessToken);
@@ -403,6 +404,7 @@ export default function AnalysisDashboard({ reports }: { reports?: PreloadedRepo
   const uxReport         = reports?.uxReport         ?? streamedUx;
   const complianceReport = reports?.complianceReport ?? streamedCompliance;
   const seoReport        = reports?.seoReport        ?? streamedSeo;
+  const screenshotUrl = streamedScreenshot;
   const isDone      = !!reports || streamedDone;
   const showResults = isDone || !!(uiReport && uxReport && complianceReport && seoReport);
 
@@ -484,7 +486,32 @@ export default function AnalysisDashboard({ reports }: { reports?: PreloadedRepo
           </div>
         )}
 
-        {/* Score summary bar â€” always visible, fills in as agents complete */}
+        {/* Page screenshot preview */}
+        {screenshotUrl && (
+          <div className="mb-5 overflow-hidden rounded-xl border border-white/8">
+            <div className="flex items-center justify-between border-b border-white/8 bg-zinc-900/60 px-4 py-2">
+              <span className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">Page Preview</span>
+              <a
+                href={targetUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="truncate max-w-xs font-mono text-[11px] text-zinc-400 transition-colors hover:text-indigo-400"
+              >
+                {targetUrl}
+              </a>
+            </div>
+            <div className="w-full bg-zinc-950" style={{ maxHeight: "520px", overflowY: "auto" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={screenshotUrl}
+                alt={`Screenshot of ${targetUrl}`}
+                className="w-full object-top"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Score summary bar — always visible, fills in as agents complete */}
         <AuditScoreSummaryBar
           uiReport={uiReport}
           uxReport={uxReport}
