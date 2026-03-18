@@ -806,6 +806,9 @@ class SecurityRunRequest(BaseModel):
     mode: str = "passive"
     page_limit: int = 200
 
+@app.get("/")
+def root():
+    return {"status": "ok"}
 
 @app.post("/audit/site")
 async def audit_site(
